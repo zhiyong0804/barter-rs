@@ -251,6 +251,24 @@ fn evaluate_hedge_decision(
         return None;
     }
 
+    // Reduce hedge quantity until available balance is sufficient
+    // Assume 10x leverage = 10% margin requirement per 1% of notional
+    let mut hedge_notional = quantity * market_reference;
+    let mut estimated_margin = hedge_notional / Decimal::from(10);
+    let min_reduction_factor = Decimal::from_str_exact("0.01").unwrap_or(Decimal::ZERO); // 0.01 minimum
+    let mut reduction_factor = Decimal::ONE;
+
+    while estimated_margin > account.available_balance && reduction_factor > min_reduction_factor {
+        reduction_factor /= Decimal::from(2); // Halve the reduction factor each iteration
+        quantity *= reduction_factor;
+        hedge_notional = quantity * market_reference;
+        estimated_margin = hedge_notional / Decimal::from(10);
+    }
+
+    if quantity <= Decimal::ZERO || estimated_margin > account.available_balance {
+        return None; // Cannot hedge even with minimal quantity
+    }
+
     let (side, position_side) = match config.monitor.position_mode {
         PositionMode::OneWay => {
             if position.position_amt > Decimal::ZERO {

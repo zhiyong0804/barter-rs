@@ -19,9 +19,9 @@
   },
   "risk": {
     "min_liquidation_buffer_ratio": 0.03,
-    "max_symbol_loss_ratio": 1.0,
-    "max_account_loss_ratio": 0.15,
-    "min_position_notional_usdt": 100
+    "max_symbol_loss_ratio": 0.8,
+    "max_account_loss_ratio": 0.90,
+    "min_position_notional_usdt": 1
   },
   "hedge": {
     "hedge_ratio": 1.0,
