@@ -1,3 +1,13 @@
+[package]
+name = "binance-futures-risk-manager"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "binance-futures-risk-manager"
+path = "risk/main.rs"
+
 [workspace]
 resolver = "3"
 members = [
@@ -11,6 +21,7 @@ members = [
 
 [workspace.dependencies]
 # Barter Ecosystem
+barter = { path = "./barter", version = "0.12.4" }
 barter-integration = { path = "./barter-integration", version = "0.10" }
 barter-instrument = { path = "./barter-instrument", version = "0.3" }
 barter-data = { path = "./barter-data", version = "0.11" }
@@ -72,3 +83,22 @@ bytes = { version = "1.5.0" }
 spin_sleep = { version = "1.3.0 "}
 criterion = { version = "0.5.1" }
 prost = { version = "0.12.4" }
+
+[dependencies]
+barter.workspace = true
+barter-data.workspace = true
+barter-instrument.workspace = true
+chrono.workspace = true
+futures.workspace = true
+hex.workspace = true
+hmac.workspace = true
+reqwest.workspace = true
+rust_decimal.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+tracing.workspace = true
+url.workspace = true

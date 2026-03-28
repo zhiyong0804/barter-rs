@@ -1,0 +1,32 @@
+{
+  "system": {
+    "instruments": [],
+    "executions": []
+  },
+  "binance": {
+    "rest_base_url": "https://fapi.binance.com",
+    "ws_base_url": "wss://fstream.binance.com",
+    "api_key_env": "BINANCE_API_KEY",
+    "api_secret_env": "BINANCE_API_SECRET",
+    "recv_window_ms": 5000,
+    "listen_key_keepalive_secs": 1800
+  },
+  "monitor": {
+    "poll_interval_ms": 1500,
+    "dry_run": true,
+    "margin_mode": "cross",
+    "position_mode": "hedge"
+  },
+  "risk": {
+    "min_liquidation_buffer_ratio": 0.03,
+    "max_symbol_loss_ratio": 1.0,
+    "max_account_loss_ratio": 0.15,
+    "min_position_notional_usdt": 100
+  },
+  "hedge": {
+    "hedge_ratio": 1.0,
+    "cooldown_secs": 30,
+    "order_type": "market",
+    "max_hedge_notional_usdt": 500
+  }
+}
