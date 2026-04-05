@@ -21,7 +21,9 @@ pub async fn run_all_book_ticker_stream(
         while let Some(message) = read.next().await {
             match message? {
                 Message::Text(text) => {
-                    let event = BookTickerEvent::try_from(serde_json::from_str::<RawBookTickerEvent>(&text)?)?;
+                    let event = BookTickerEvent::try_from(serde_json::from_str::<
+                        RawBookTickerEvent,
+                    >(&text)?)?;
                     let symbol = event.symbol.clone();
 
                     let mut markets = market_state.write().await;
@@ -35,7 +37,10 @@ pub async fn run_all_book_ticker_stream(
                     write.send(Message::Pong(payload)).await?;
                 }
                 Message::Close(frame) => {
-                    warn!(?frame, "all-market book ticker websocket closed, reconnecting");
+                    warn!(
+                        ?frame,
+                        "all-market book ticker websocket closed, reconnecting"
+                    );
                     break;
                 }
                 Message::Binary(_) | Message::Pong(_) | Message::Frame(_) => {}
@@ -77,7 +82,9 @@ pub async fn run_all_mark_price_stream(
 
                         {
                             let mut risk = risk_state.write().await;
-                            for position in risk.positions.values_mut().filter(|p| p.symbol == symbol) {
+                            for position in
+                                risk.positions.values_mut().filter(|p| p.symbol == symbol)
+                            {
                                 position.mark_price = event.mark_price;
                                 position.notional = position.position_amt * event.mark_price;
                             }
@@ -90,7 +97,10 @@ pub async fn run_all_mark_price_stream(
                     write.send(Message::Pong(payload)).await?;
                 }
                 Message::Close(frame) => {
-                    warn!(?frame, "all-market mark price websocket closed, reconnecting");
+                    warn!(
+                        ?frame,
+                        "all-market mark price websocket closed, reconnecting"
+                    );
                     break;
                 }
                 Message::Binary(_) | Message::Pong(_) | Message::Frame(_) => {}

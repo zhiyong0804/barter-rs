@@ -3,7 +3,7 @@ use crate::{
         AccountUpdateSummary, BinanceFuturesRestClient, FuturesPositionRisk, OrderTradeUpdate,
         UserDataEvent,
     },
-    state::{RiskTrigger, SharedRiskState, position_key},
+    state::{position_key, RiskTrigger, SharedRiskState},
 };
 use futures::{SinkExt, StreamExt};
 use rust_decimal::Decimal;
@@ -122,17 +122,20 @@ async fn apply_account_update(
 
     for position_update in summary.positions {
         let key = position_key(&position_update.symbol, position_update.position_side);
-        let position = state.positions.entry(key).or_insert_with(|| FuturesPositionRisk {
-            symbol: position_update.symbol.clone(),
-            position_amt: Decimal::ZERO,
-            entry_price: Decimal::ZERO,
-            mark_price: Decimal::ZERO,
-            liquidation_price: Decimal::ZERO,
-            unrealized_profit: Decimal::ZERO,
-            notional: Decimal::ZERO,
-            margin_type: position_update.margin_type.clone(),
-            position_side: position_update.position_side,
-        });
+        let position = state
+            .positions
+            .entry(key)
+            .or_insert_with(|| FuturesPositionRisk {
+                symbol: position_update.symbol.clone(),
+                position_amt: Decimal::ZERO,
+                entry_price: Decimal::ZERO,
+                mark_price: Decimal::ZERO,
+                liquidation_price: Decimal::ZERO,
+                unrealized_profit: Decimal::ZERO,
+                notional: Decimal::ZERO,
+                margin_type: position_update.margin_type.clone(),
+                position_side: position_update.position_side,
+            });
 
         position.symbol = position_update.symbol;
         position.position_amt = position_update.position_amt;

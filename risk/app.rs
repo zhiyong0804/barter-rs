@@ -1,14 +1,14 @@
 use crate::{
     binance::{BinanceCredentials, BinanceFuturesRestClient},
-    config::{AppConfig, MarginMode, load_config},
+    config::{load_config, AppConfig, MarginMode},
     market_stream::{run_all_book_ticker_stream, run_all_mark_price_stream},
-    state::{RiskState, RiskTrigger, SharedMarketState, SharedRiskState, position_key},
+    state::{position_key, RiskState, RiskTrigger, SharedMarketState, SharedRiskState},
     supervisor::PositionSupervisor,
     user_data_stream::run_user_data_stream,
 };
 use barter::logging::init_logging;
 use std::{collections::HashMap, sync::Arc};
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{mpsc, RwLock};
 use tracing::{error, info, warn};
 
 pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -30,7 +30,12 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         account: initial_account,
         positions: initial_positions
             .into_iter()
-            .map(|position| (position_key(&position.symbol, position.position_side), position))
+            .map(|position| {
+                (
+                    position_key(&position.symbol, position.position_side),
+                    position,
+                )
+            })
             .collect(),
         last_orders: HashMap::new(),
     }));
@@ -45,7 +50,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let trigger_tx = trigger_tx.clone();
         let ws_base_url = ws_base_url.clone();
         tokio::spawn(async move {
-            if let Err(error) = run_all_book_ticker_stream(&ws_base_url, market_state, trigger_tx).await {
+            if let Err(error) =
+                run_all_book_ticker_stream(&ws_base_url, market_state, trigger_tx).await
+            {
                 error!(?error, "all-market book ticker task failed");
             }
         })
@@ -57,7 +64,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let trigger_tx = trigger_tx.clone();
         let ws_base_url = ws_base_url.clone();
         tokio::spawn(async move {
-            if let Err(error) = run_all_mark_price_stream(&ws_base_url, market_state, risk_state, trigger_tx).await {
+            if let Err(error) =
+                run_all_mark_price_stream(&ws_base_url, market_state, risk_state, trigger_tx).await
+            {
                 error!(?error, "all-market mark price task failed");
             }
         })
@@ -68,14 +77,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let risk_state = Arc::clone(&risk_state);
         let trigger_tx = trigger_tx.clone();
         tokio::spawn(async move {
-            if let Err(error) = run_user_data_stream(
-                client,
-                ws_base_url,
-                keepalive_secs,
-                risk_state,
-                trigger_tx,
-            )
-            .await
+            if let Err(error) =
+                run_user_data_stream(client, ws_base_url, keepalive_secs, risk_state, trigger_tx)
+                    .await
             {
                 error!(?error, "user data stream task failed");
             }

@@ -4,9 +4,7 @@ use crate::{
         FuturesPositionRisk, HedgeOrderRequest, OrderTradeUpdate,
     },
     config::{AppConfig, HedgeOrderType, MarginMode, PositionMode},
-    state::{
-        HedgeDecision, MarketSnapshot, RiskTrigger, SharedMarketState, SharedRiskState,
-    },
+    state::{HedgeDecision, MarketSnapshot, RiskTrigger, SharedMarketState, SharedRiskState},
 };
 use barter_instrument::Side;
 use rust_decimal::Decimal;
@@ -334,11 +332,7 @@ fn liquidation_buffer_ratio(mark_price: Decimal, liquidation_price: Decimal) -> 
     Some((mark_price - liquidation_price).abs() / mark_price)
 }
 
-fn cooldown_active(
-    cooldowns: &HashMap<String, Instant>,
-    key: &str,
-    cooldown_secs: u64,
-) -> bool {
+fn cooldown_active(cooldowns: &HashMap<String, Instant>, key: &str, cooldown_secs: u64) -> bool {
     cooldowns
         .get(key)
         .is_some_and(|last_hit| last_hit.elapsed() < Duration::from_secs(cooldown_secs))

@@ -1,15 +1,15 @@
 use crate::binance::{
+    model::{
+        decimal_to_string, form_body, parse_response, side_to_binance, HmacSha256, OrderAck,
+        RawFuturesAccountInformation, RawFuturesPositionRisk,
+    },
     BinanceCredentials, BinanceError, FuturesAccountInformation, FuturesPositionRisk,
     HedgeOrderRequest, ListenKeyResponse,
-    model::{
-        HmacSha256, OrderAck, RawFuturesAccountInformation, RawFuturesPositionRisk,
-        decimal_to_string, form_body, parse_response, side_to_binance,
-    },
 };
 use crate::config::BinanceConfig;
 use chrono::Utc;
 use hmac::Mac;
-use reqwest::{Client, header::CONTENT_TYPE};
+use reqwest::{header::CONTENT_TYPE, Client};
 use serde::de::DeserializeOwned;
 
 #[derive(Debug, Clone)]
@@ -37,7 +37,9 @@ impl BinanceFuturesRestClient {
         })
     }
 
-    pub async fn fetch_account_information(&self) -> Result<FuturesAccountInformation, BinanceError> {
+    pub async fn fetch_account_information(
+        &self,
+    ) -> Result<FuturesAccountInformation, BinanceError> {
         let raw = self
             .signed_get::<RawFuturesAccountInformation>("/fapi/v2/account", Vec::new())
             .await?;
@@ -100,7 +102,11 @@ impl BinanceFuturesRestClient {
         Ok(())
     }
 
-    async fn signed_get<T>(&self, path: &str, params: Vec<(&str, String)>) -> Result<T, BinanceError>
+    async fn signed_get<T>(
+        &self,
+        path: &str,
+        params: Vec<(&str, String)>,
+    ) -> Result<T, BinanceError>
     where
         T: DeserializeOwned,
     {
@@ -140,7 +146,11 @@ impl BinanceFuturesRestClient {
         parse_response(response).await
     }
 
-    async fn api_key_post<T>(&self, path: &str, params: Vec<(&str, String)>) -> Result<T, BinanceError>
+    async fn api_key_post<T>(
+        &self,
+        path: &str,
+        params: Vec<(&str, String)>,
+    ) -> Result<T, BinanceError>
     where
         T: DeserializeOwned,
     {
@@ -159,7 +169,11 @@ impl BinanceFuturesRestClient {
         parse_response(response).await
     }
 
-    async fn api_key_put<T>(&self, path: &str, params: Vec<(&str, String)>) -> Result<T, BinanceError>
+    async fn api_key_put<T>(
+        &self,
+        path: &str,
+        params: Vec<(&str, String)>,
+    ) -> Result<T, BinanceError>
     where
         T: DeserializeOwned,
     {
@@ -178,7 +192,11 @@ impl BinanceFuturesRestClient {
         parse_response(response).await
     }
 
-    async fn api_key_delete<T>(&self, path: &str, params: Vec<(&str, String)>) -> Result<T, BinanceError>
+    async fn api_key_delete<T>(
+        &self,
+        path: &str,
+        params: Vec<(&str, String)>,
+    ) -> Result<T, BinanceError>
     where
         T: DeserializeOwned,
     {
@@ -207,8 +225,9 @@ impl BinanceFuturesRestClient {
             .collect::<Vec<_>>()
             .join("&");
 
-        let mut mac = HmacSha256::new_from_slice(self.credentials.api_secret.as_bytes())
-            .map_err(|error: hmac::digest::InvalidLength| BinanceError::Signing(error.to_string()))?;
+        let mut mac = HmacSha256::new_from_slice(self.credentials.api_secret.as_bytes()).map_err(
+            |error: hmac::digest::InvalidLength| BinanceError::Signing(error.to_string()),
+        )?;
         mac.update(query.as_bytes());
         let signature = hex::encode(mac.finalize().into_bytes());
 

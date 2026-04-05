@@ -5,6 +5,7 @@ use crate::{
         Subscription,
         book::{OrderBooksL1, OrderBooksL2},
         liquidation::Liquidations,
+        mark_price::MarkPrices,
         trade::PublicTrades,
     },
 };
@@ -46,6 +47,11 @@ impl BinanceChannel {
     ///
     /// See docs: <https://binance-docs.github.io/apidocs/futures/en/#liquidation-order-streams>
     pub const LIQUIDATIONS: Self = Self("@forceOrder");
+
+    /// [`BinanceFuturesUsd`] mark price update channel name.
+    ///
+    /// See docs: <https://binance-docs.github.io/apidocs/futures/en/#mark-price-stream>
+    pub const MARK_PRICE: Self = Self("@markPrice");
 }
 
 impl<Server, Instrument> Identifier<BinanceChannel>
@@ -77,6 +83,14 @@ impl<Instrument> Identifier<BinanceChannel>
 {
     fn id(&self) -> BinanceChannel {
         BinanceChannel::LIQUIDATIONS
+    }
+}
+
+impl<Instrument> Identifier<BinanceChannel>
+    for Subscription<BinanceFuturesUsd, Instrument, MarkPrices>
+{
+    fn id(&self) -> BinanceChannel {
+        BinanceChannel::MARK_PRICE
     }
 }
 

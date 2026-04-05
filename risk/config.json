@@ -13,18 +13,18 @@
   },
   "monitor": {
     "poll_interval_ms": 1500,
-    "dry_run": true,
+    "dry_run": false,
     "margin_mode": "cross",
     "position_mode": "hedge"
   },
   "risk": {
-    "min_liquidation_buffer_ratio": 0.03,
+    "min_liquidation_buffer_ratio": 0.2,
     "max_symbol_loss_ratio": 0.8,
-    "max_account_loss_ratio": 0.90,
-    "min_position_notional_usdt": 1
+    "max_account_loss_ratio": 0.4,
+    "min_position_notional_usdt": 2
   },
   "hedge": {
-    "hedge_ratio": 1.0,
+    "hedge_ratio": 1.2,
     "cooldown_secs": 30,
     "order_type": "market",
     "max_hedge_notional_usdt": 500
