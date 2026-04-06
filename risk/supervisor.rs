@@ -13,7 +13,19 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use tracing::{error, info};
+
+#[derive(Debug, Clone)]
+struct SymbolExposure {
+    symbol: String,
+    market_reference: Decimal,
+    net_qty: Decimal,
+    net_notional: Decimal,
+    margin_exposure: Decimal,
+    net_unrealized_profit: Decimal,
+    entry_price: Decimal,
+    liquidation_price: Decimal,
+}
 
 pub struct PositionSupervisor {
     config: AppConfig,
@@ -97,26 +109,38 @@ impl PositionSupervisor {
             .values()
             .filter(|position| position.is_open())
             .filter(|position| full_scan.is_some() || symbols.contains(&position.symbol))
+            .filter(|position| {
+                self.config.monitor.margin_mode != MarginMode::Cross || position.is_cross()
+            })
             .cloned()
             .collect::<Vec<_>>();
 
+        let mut positions_by_symbol: HashMap<String, Vec<FuturesPositionRisk>> = HashMap::new();
         for position in positions {
-            if self.config.monitor.margin_mode == MarginMode::Cross && !position.is_cross() {
+            positions_by_symbol
+                .entry(position.symbol.clone())
+                .or_default()
+                .push(position);
+        }
+
+        for (symbol, symbol_positions) in positions_by_symbol {
+            let Some(exposure) =
+                build_symbol_exposure(&symbol, &symbol_positions, market_state.get(&symbol))
+            else {
                 continue;
-            }
+            };
 
             let Some(decision) = evaluate_hedge_decision(
                 &self.config,
                 &account,
-                &position,
-                market_state.get(&position.symbol),
-                risk_state.last_orders.get(&position.symbol),
+                &exposure,
+                risk_state.last_orders.get(&symbol),
                 account_loss_ratio,
             ) else {
                 continue;
             };
 
-            let cooldown_key = format!("{}:{}", position.symbol, position.position_side.as_str());
+            let cooldown_key = format!("{}:NET", symbol);
             if cooldown_active(cooldowns, &cooldown_key, self.config.hedge.cooldown_secs) {
                 continue;
             }
@@ -130,10 +154,12 @@ impl PositionSupervisor {
                     "Dry-run hedge triggered"
                 );
             } else {
+                let timestamp_ms = chrono::Utc::now().timestamp_millis();
+                let symbol_prefix = decision.symbol.chars().take(3).collect::<String>();
                 let client_order_id = format!(
-                    "barter_hedge_{}_{}",
-                    decision.symbol.to_lowercase(),
-                    chrono::Utc::now().timestamp_millis()
+                    "h{}{}",
+                    symbol_prefix.to_lowercase(),
+                    timestamp_ms % 1_000_000_000 // last 9 digits for uniqueness
                 );
                 let ack = self
                     .client
@@ -166,42 +192,43 @@ impl PositionSupervisor {
 fn evaluate_hedge_decision(
     config: &AppConfig,
     account: &FuturesAccountInformation,
-    position: &FuturesPositionRisk,
-    market: Option<&MarketSnapshot>,
+    exposure: &SymbolExposure,
     last_order: Option<&OrderTradeUpdate>,
     account_loss_ratio: Decimal,
 ) -> Option<HedgeDecision> {
-    if config.monitor.position_mode == PositionMode::Hedge
-        && position.position_side == BinancePositionSide::Both
-    {
-        warn!(
-            symbol = %position.symbol,
-            "Configured hedge mode but Binance returned BOTH position side; check account position mode"
+    tracing::debug!(
+        symbol = %exposure.symbol,
+        net_qty = %exposure.net_qty,
+        market_reference = %exposure.market_reference,
+        net_notional = %exposure.net_notional,
+        margin_exposure = %exposure.margin_exposure,
+        net_unrealized_profit = %exposure.net_unrealized_profit,
+        liquidation_price = %exposure.liquidation_price,
+        "Net exposure evaluation starting"
+    );
+
+    if exposure.margin_exposure < config.risk.min_position_notional_usdt {
+        tracing::debug!(
+            symbol = %exposure.symbol,
+            margin_exposure = %exposure.margin_exposure,
+            min_position_notional_usdt = %config.risk.min_position_notional_usdt,
+            "Margin exposure below minimum threshold, skipping"
         );
         return None;
     }
 
-    let market_reference = if position.mark_price > Decimal::ZERO {
-        position.mark_price
-    } else {
-        market
-            .and_then(|state| state.reference_price)
-            .unwrap_or(Decimal::ZERO)
-    };
-
-    let position_notional = if position.notional.abs() > Decimal::ZERO {
-        position.notional.abs()
-    } else {
-        position.position_amt.abs() * market_reference
-    };
-
-    if position_notional < config.risk.min_position_notional_usdt {
-        return None;
-    }
-
     let liquidation_buffer_ratio =
-        liquidation_buffer_ratio(market_reference, position.liquidation_price);
-    let symbol_loss_ratio = negative_pnl_ratio(position.unrealized_profit, position_notional);
+        liquidation_buffer_ratio(exposure.market_reference, exposure.liquidation_price);
+    let symbol_loss_ratio =
+        negative_pnl_ratio(exposure.net_unrealized_profit, exposure.margin_exposure);
+
+    tracing::debug!(
+        symbol = %exposure.symbol,
+        account_loss_ratio = %account_loss_ratio,
+        symbol_loss_ratio = %symbol_loss_ratio,
+        liquidation_buffer_ratio = ?liquidation_buffer_ratio,
+        "Calculated net exposure loss ratios"
+    );
 
     let mut triggers = Vec::new();
     if let Some(buffer_ratio) = liquidation_buffer_ratio {
@@ -228,17 +255,40 @@ fn evaluate_hedge_decision(
     }
 
     if triggers.is_empty() {
+        tracing::debug!(
+            symbol = %exposure.symbol,
+            "No hedge triggers met"
+        );
         return None;
     }
+
+    tracing::info!(
+        symbol = %exposure.symbol,
+        triggers = ?triggers,
+        "Hedge triggers detected"
+    );
 
     if config.hedge.order_type != HedgeOrderType::Market {
+        tracing::warn!(
+            symbol = %exposure.symbol,
+            order_type = ?config.hedge.order_type,
+            "Hedge order type is not Market, skipping"
+        );
         return None;
     }
 
-    let mut quantity = position.position_amt.abs() * config.hedge.hedge_ratio;
+    if exposure.net_qty.is_zero() {
+        tracing::debug!(
+            symbol = %exposure.symbol,
+            "Net exposure is zero, skipping"
+        );
+        return None;
+    }
+
+    let mut quantity = exposure.net_qty.abs() * config.hedge.hedge_ratio;
     if let Some(max_hedge_notional_usdt) = config.hedge.max_hedge_notional_usdt {
-        if market_reference > Decimal::ZERO {
-            let max_qty = max_hedge_notional_usdt / market_reference;
+        if exposure.market_reference > Decimal::ZERO {
+            let max_qty = max_hedge_notional_usdt / exposure.market_reference;
             if quantity > max_qty {
                 quantity = max_qty;
             }
@@ -246,12 +296,17 @@ fn evaluate_hedge_decision(
     }
 
     if quantity <= Decimal::ZERO {
+        tracing::debug!(
+            symbol = %exposure.symbol,
+            quantity = %quantity,
+            "Calculated hedge quantity is zero or negative, skipping"
+        );
         return None;
     }
 
     // Reduce hedge quantity until available balance is sufficient
     // Assume 10x leverage = 10% margin requirement per 1% of notional
-    let mut hedge_notional = quantity * market_reference;
+    let mut hedge_notional = quantity * exposure.market_reference;
     let mut estimated_margin = hedge_notional / Decimal::from(10);
     let min_reduction_factor = Decimal::from_str_exact("0.01").unwrap_or(Decimal::ZERO); // 0.01 minimum
     let mut reduction_factor = Decimal::ONE;
@@ -259,37 +314,48 @@ fn evaluate_hedge_decision(
     while estimated_margin > account.available_balance && reduction_factor > min_reduction_factor {
         reduction_factor /= Decimal::from(2); // Halve the reduction factor each iteration
         quantity *= reduction_factor;
-        hedge_notional = quantity * market_reference;
+        hedge_notional = quantity * exposure.market_reference;
         estimated_margin = hedge_notional / Decimal::from(10);
     }
 
     if quantity <= Decimal::ZERO || estimated_margin > account.available_balance {
+        tracing::warn!(
+            symbol = %exposure.symbol,
+            quantity = %quantity,
+            estimated_margin = %estimated_margin,
+            available_balance = %account.available_balance,
+            "Insufficient margin for hedge even after reduction, skipping"
+        );
         return None; // Cannot hedge even with minimal quantity
     }
 
     let (side, position_side) = match config.monitor.position_mode {
         PositionMode::OneWay => {
-            if position.position_amt > Decimal::ZERO {
+            if exposure.net_qty > Decimal::ZERO {
                 (Side::Sell, None)
             } else {
                 (Side::Buy, None)
             }
         }
         PositionMode::Hedge => {
-            if position.position_amt > Decimal::ZERO {
-                (Side::Sell, Some(BinancePositionSide::Short))
+            if exposure.net_qty > Decimal::ZERO {
+                (Side::Sell, Some(BinancePositionSide::Long))
             } else {
-                (Side::Buy, Some(BinancePositionSide::Long))
+                (Side::Buy, Some(BinancePositionSide::Short))
             }
         }
     };
 
     let mut reason = format!(
-        "entry_price={}, wallet_balance={}, margin_balance={}, available_balance={}, {}",
-        position.entry_price,
+        "entry_price={}, wallet_balance={}, margin_balance={}, available_balance={}, net_qty={}, net_notional={}, margin_exposure={}, net_unrealized_profit={}, {}",
+        exposure.entry_price,
         account.total_wallet_balance,
         account.total_margin_balance,
         account.available_balance,
+        exposure.net_qty,
+        exposure.net_notional,
+        exposure.margin_exposure,
+        exposure.net_unrealized_profit,
         triggers.join("; ")
     );
 
@@ -307,13 +373,123 @@ fn evaluate_hedge_decision(
         ));
     }
 
+    tracing::info!(
+        symbol = %exposure.symbol,
+        side = ?side,
+        position_side = ?position_side,
+        quantity = %quantity,
+        "HedgeDecision created and will be returned"
+    );
+
     Some(HedgeDecision {
-        symbol: position.symbol.clone(),
+        symbol: exposure.symbol.clone(),
         side,
         position_side,
         quantity,
         reason,
     })
+}
+
+fn build_symbol_exposure(
+    symbol: &str,
+    positions: &[FuturesPositionRisk],
+    market: Option<&MarketSnapshot>,
+) -> Option<SymbolExposure> {
+    if positions.is_empty() {
+        return None;
+    }
+
+    let market_reference = positions
+        .iter()
+        .find(|position| position.mark_price > Decimal::ZERO)
+        .map(|position| position.mark_price)
+        .or_else(|| market.and_then(|state| state.reference_price))
+        .unwrap_or(Decimal::ZERO);
+
+    let net_qty = positions
+        .iter()
+        .fold(Decimal::ZERO, |acc, position| acc + signed_qty(position));
+
+    let net_signed_notional = positions.iter().fold(Decimal::ZERO, |acc, position| {
+        acc + signed_notional(position, market_reference)
+    });
+
+    let margin_exposure = positions.iter().fold(Decimal::ZERO, |acc, position| {
+        let abs_notional = signed_notional(position, market_reference).abs();
+        acc + abs_notional
+    });
+
+    let net_notional = if market_reference > Decimal::ZERO {
+        net_qty.abs() * market_reference
+    } else {
+        net_signed_notional.abs()
+    };
+
+    let net_unrealized_profit = positions.iter().fold(Decimal::ZERO, |acc, position| {
+        acc + position.unrealized_profit
+    });
+
+    let representative = if net_qty > Decimal::ZERO {
+        positions
+            .iter()
+            .filter(|position| signed_qty(position) > Decimal::ZERO)
+            .max_by_key(|position| position.position_amt.abs())
+    } else if net_qty < Decimal::ZERO {
+        positions
+            .iter()
+            .filter(|position| signed_qty(position) < Decimal::ZERO)
+            .max_by_key(|position| position.position_amt.abs())
+    } else {
+        positions
+            .iter()
+            .max_by_key(|position| position.position_amt.abs())
+    };
+
+    let entry_price = representative
+        .map(|position| position.entry_price)
+        .unwrap_or(Decimal::ZERO);
+    let liquidation_price = representative
+        .map(|position| position.liquidation_price)
+        .unwrap_or(Decimal::ZERO);
+
+    Some(SymbolExposure {
+        symbol: symbol.to_owned(),
+        market_reference,
+        net_qty,
+        net_notional,
+        margin_exposure,
+        net_unrealized_profit,
+        entry_price,
+        liquidation_price,
+    })
+}
+
+fn signed_qty(position: &FuturesPositionRisk) -> Decimal {
+    match position.position_side {
+        BinancePositionSide::Long => position.position_amt.abs(),
+        BinancePositionSide::Short => -position.position_amt.abs(),
+        BinancePositionSide::Both => position.position_amt,
+    }
+}
+
+fn signed_notional(position: &FuturesPositionRisk, market_reference: Decimal) -> Decimal {
+    let abs_notional = if position.notional.abs() > Decimal::ZERO {
+        position.notional.abs()
+    } else {
+        position.position_amt.abs() * market_reference
+    };
+
+    match position.position_side {
+        BinancePositionSide::Long => abs_notional,
+        BinancePositionSide::Short => -abs_notional,
+        BinancePositionSide::Both => {
+            if position.notional != Decimal::ZERO {
+                position.notional
+            } else {
+                position.position_amt * market_reference
+            }
+        }
+    }
 }
 
 fn negative_pnl_ratio(pnl: Decimal, base: Decimal) -> Decimal {

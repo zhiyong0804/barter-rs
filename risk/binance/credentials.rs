@@ -16,21 +16,6 @@ impl BinanceCredentials {
             name: api_secret_env.to_owned(),
         })?;
 
-        let api_key = api_key.trim().to_owned();
-        let api_secret = api_secret.trim().to_owned();
-
-        if api_key.is_empty() {
-            return Err(BinanceError::MissingEnvVar {
-                name: api_key_env.to_owned(),
-            });
-        }
-
-        if api_secret.is_empty() {
-            return Err(BinanceError::MissingEnvVar {
-                name: api_secret_env.to_owned(),
-            });
-        }
-
         Ok(Self {
             api_key,
             api_secret,

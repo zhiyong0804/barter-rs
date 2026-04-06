@@ -9,7 +9,7 @@ pub fn init_logging() {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::filter::EnvFilter::builder()
-                .with_default_directive(tracing_subscriber::filter::LevelFilter::INFO.into())
+                .with_default_directive(tracing_subscriber::filter::LevelFilter::DEBUG.into())
                 .from_env_lossy(),
         )
         .with(tracing_subscriber::fmt::layer())
@@ -25,7 +25,7 @@ pub fn init_json_logging() {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::filter::EnvFilter::builder()
-                .with_default_directive(tracing_subscriber::filter::LevelFilter::INFO.into())
+                .with_default_directive(tracing_subscriber::filter::LevelFilter::DEBUG.into())
                 .from_env_lossy(),
         )
         .with(tracing_subscriber::fmt::layer().json().flatten_event(true))

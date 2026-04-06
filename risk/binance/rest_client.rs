@@ -10,7 +10,32 @@ use crate::config::BinanceConfig;
 use chrono::Utc;
 use hmac::Mac;
 use reqwest::{header::CONTENT_TYPE, Client};
+use rust_decimal::{Decimal, RoundingStrategy};
 use serde::de::DeserializeOwned;
+use serde::Deserialize;
+
+#[derive(Debug, Clone, Deserialize)]
+struct ExchangeInfoResponse {
+    symbols: Vec<ExchangeInfoSymbol>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ExchangeInfoSymbol {
+    symbol: String,
+    #[serde(rename = "quantityPrecision")]
+    quantity_precision: u32,
+    filters: Vec<ExchangeInfoFilter>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ExchangeInfoFilter {
+    #[serde(rename = "filterType")]
+    filter_type: String,
+    #[serde(rename = "stepSize")]
+    step_size: Option<String>,
+    #[serde(rename = "minQty")]
+    min_qty: Option<String>,
+}
 
 #[derive(Debug, Clone)]
 pub struct BinanceFuturesRestClient {
@@ -60,11 +85,15 @@ impl BinanceFuturesRestClient {
         &self,
         request: HedgeOrderRequest,
     ) -> Result<OrderAck, BinanceError> {
+        let quantity = self
+            .normalise_market_order_quantity(&request.symbol, request.quantity)
+            .await?;
+
         let mut params = vec![
             ("symbol", request.symbol),
             ("side", side_to_binance(request.side).to_owned()),
             ("type", "MARKET".to_owned()),
-            ("quantity", decimal_to_string(request.quantity)),
+            ("quantity", decimal_to_string(quantity)),
             ("newClientOrderId", request.client_order_id),
         ];
 
@@ -121,6 +150,103 @@ impl BinanceFuturesRestClient {
             .await?;
 
         parse_response(response).await
+    }
+
+    async fn unsigned_get<T>(&self, path: &str, params: Vec<(&str, String)>) -> Result<T, BinanceError>
+    where
+        T: DeserializeOwned,
+    {
+        let query = form_body(params);
+        let url = if query.is_empty() {
+            format!("{}{}", self.rest_base_url, path)
+        } else {
+            format!("{}{}?{}", self.rest_base_url, path, query)
+        };
+
+        let response = self.http.get(url).send().await?;
+        parse_response(response).await
+    }
+
+    async fn normalise_market_order_quantity(
+        &self,
+        symbol: &str,
+        quantity: Decimal,
+    ) -> Result<Decimal, BinanceError> {
+        if quantity <= Decimal::ZERO {
+            return Err(BinanceError::InvalidResponse(format!(
+                "invalid non-positive quantity for {symbol}: {quantity}"
+            )));
+        }
+
+        let exchange_info: ExchangeInfoResponse = self
+            .unsigned_get(
+                "/fapi/v1/exchangeInfo",
+                vec![("symbol", symbol.to_owned())],
+            )
+            .await?;
+
+        let symbol_info = exchange_info
+            .symbols
+            .into_iter()
+            .find(|item| item.symbol == symbol)
+            .ok_or_else(|| {
+                BinanceError::InvalidResponse(format!("symbol not found in exchangeInfo: {symbol}"))
+            })?;
+
+        let mut normalised = quantity;
+
+        let lot_filter = symbol_info
+            .filters
+            .iter()
+            .find(|filter| filter.filter_type == "MARKET_LOT_SIZE")
+            .or_else(|| {
+                symbol_info
+                    .filters
+                    .iter()
+                    .find(|filter| filter.filter_type == "LOT_SIZE")
+            });
+
+        if let Some(filter) = lot_filter {
+            if let Some(step_size) = &filter.step_size {
+                let step = step_size.parse::<Decimal>().map_err(|error| {
+                    BinanceError::InvalidResponse(format!(
+                        "invalid stepSize for {symbol}: {step_size} ({error})"
+                    ))
+                })?;
+
+                if step > Decimal::ZERO {
+                    let units = (normalised / step).floor();
+                    normalised = units * step;
+                }
+            }
+
+            if let Some(min_qty) = &filter.min_qty {
+                let min = min_qty.parse::<Decimal>().map_err(|error| {
+                    BinanceError::InvalidResponse(format!(
+                        "invalid minQty for {symbol}: {min_qty} ({error})"
+                    ))
+                })?;
+
+                if normalised < min {
+                    return Err(BinanceError::InvalidResponse(format!(
+                        "quantity {normalised} below minQty {min} for {symbol}"
+                    )));
+                }
+            }
+        }
+
+        normalised = normalised.round_dp_with_strategy(
+            symbol_info.quantity_precision,
+            RoundingStrategy::ToZero,
+        );
+
+        if normalised <= Decimal::ZERO {
+            return Err(BinanceError::InvalidResponse(format!(
+                "normalised quantity became non-positive for {symbol}: {normalised}"
+            )));
+        }
+
+        Ok(normalised)
     }
 
     async fn signed_post<T>(

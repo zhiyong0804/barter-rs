@@ -19,7 +19,7 @@
   },
   "risk": {
     "min_liquidation_buffer_ratio": 0.2,
-    "max_symbol_loss_ratio": 0.8,
+    "max_symbol_loss_ratio": 0.18,
     "max_account_loss_ratio": 0.4,
     "min_position_notional_usdt": 2
   },

@@ -133,6 +133,7 @@ async fn apply_account_update(
                 liquidation_price: Decimal::ZERO,
                 unrealized_profit: Decimal::ZERO,
                 notional: Decimal::ZERO,
+                leverage: Decimal::ONE,
                 margin_type: position_update.margin_type.clone(),
                 position_side: position_update.position_side,
             });

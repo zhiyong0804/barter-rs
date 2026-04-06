@@ -13,6 +13,7 @@ pub struct FuturesPositionRisk {
     pub liquidation_price: Decimal,
     pub unrealized_profit: Decimal,
     pub notional: Decimal,
+    pub leverage: Decimal,
     pub margin_type: String,
     pub position_side: BinancePositionSide,
 }
@@ -39,6 +40,7 @@ impl TryFrom<RawFuturesPositionRisk> for FuturesPositionRisk {
             liquidation_price: parse_decimal("liquidationPrice", &value.liquidation_price)?,
             unrealized_profit: parse_decimal("unRealizedProfit", &value.un_realized_profit)?,
             notional: parse_decimal("notional", &value.notional)?,
+            leverage: parse_decimal("leverage", &value.leverage)?,
             margin_type: value.margin_type,
             position_side: BinancePositionSide::from_exchange_str(&value.position_side)?,
         })

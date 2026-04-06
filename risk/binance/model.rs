@@ -2,23 +2,13 @@ use crate::binance::BinancePositionSide;
 use barter_instrument::Side;
 use reqwest::StatusCode;
 use rust_decimal::Decimal;
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde::Deserialize;
 use sha2::Sha256;
 use std::str::FromStr;
 use thiserror::Error;
 
 pub(crate) type HmacSha256 = hmac::Hmac<Sha256>;
-
-
-
-
-
-
-
-
-
-
 
 #[derive(Debug, Clone)]
 pub struct HedgeOrderRequest {
@@ -92,9 +82,15 @@ impl TryFrom<RawAccountUpdateData> for AccountUpdateSummary {
             .map(PositionUpdate::try_from)
             .collect::<Result<Vec<_>, _>>()?;
 
-        let total_wallet_balance = balances.iter().fold(Decimal::ZERO, |acc, balance| acc + balance.wallet_balance);
-        let available_balance = balances.iter().fold(Decimal::ZERO, |acc, balance| acc + balance.cross_wallet_balance);
-        let total_unrealized_profit = positions.iter().fold(Decimal::ZERO, |acc, position| acc + position.unrealized_profit);
+        let total_wallet_balance = balances
+            .iter()
+            .fold(Decimal::ZERO, |acc, balance| acc + balance.wallet_balance);
+        let available_balance = balances.iter().fold(Decimal::ZERO, |acc, balance| {
+            acc + balance.cross_wallet_balance
+        });
+        let total_unrealized_profit = positions.iter().fold(Decimal::ZERO, |acc, position| {
+            acc + position.unrealized_profit
+        });
         let total_margin_balance = total_wallet_balance + total_unrealized_profit;
 
         Ok(Self {
@@ -262,6 +258,7 @@ pub(crate) struct RawFuturesPositionRisk {
     #[serde(rename = "unRealizedProfit")]
     pub(crate) un_realized_profit: String,
     pub(crate) notional: String,
+    pub(crate) leverage: String,
     #[serde(rename = "marginType")]
     pub(crate) margin_type: String,
     #[serde(rename = "positionSide")]
@@ -410,6 +407,8 @@ where
     }
 
     serde_json::from_str(&body).map_err(|error| {
-        BinanceError::InvalidResponse(format!("failed to decode response body: {error}; body={body}"))
+        BinanceError::InvalidResponse(format!(
+            "failed to decode response body: {error}; body={body}"
+        ))
     })
 }
