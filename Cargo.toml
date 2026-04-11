@@ -31,6 +31,7 @@ barter-macro = { path = "./barter-macro", version = "0.2.0" }
 # Logging
 tracing = { version = "0.1.41" }
 tracing-subscriber = { version = "0.3.19" }
+tracing-appender = { version = "0.2.3" }
 
 # Async
 tokio = { version = "1.42", default-features = false, features = ["macros", "net", "rt-multi-thread", "signal", "time"] }

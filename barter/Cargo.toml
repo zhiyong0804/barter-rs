@@ -33,6 +33,7 @@ barter-execution = { workspace = true }
 # Logging
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json", "registry"]}
+tracing-appender = { workspace = true }
 
 # Async
 tokio = { workspace = true, features = ["sync"] }

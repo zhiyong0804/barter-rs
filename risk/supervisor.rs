@@ -339,9 +339,11 @@ fn evaluate_hedge_decision(
         }
         PositionMode::Hedge => {
             if exposure.net_qty > Decimal::ZERO {
-                (Side::Sell, Some(BinancePositionSide::Long))
+                // Net long → open Short hedge (SELL + SHORT)
+                (Side::Sell, Some(BinancePositionSide::Short))
             } else {
-                (Side::Buy, Some(BinancePositionSide::Short))
+                // Net short → open Long hedge (BUY + LONG)
+                (Side::Buy, Some(BinancePositionSide::Long))
             }
         }
     };
