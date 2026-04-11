@@ -1,0 +1,24 @@
+{
+  "telegram": {
+    "bot_token": "8267744473:AAF0pAqTI0DyJcE9NrWJGdPPpWBaSimON4k",
+    "allowed_chat_ids": [-5107074002],
+    "poll_interval_ms": 1200
+  },
+  "binance": {
+    "rest_base_url": "https://fapi.binance.com",
+    "api_key_env": "BINANCE_API_KEY",
+    "api_secret_env": "BINANCE_API_SECRET",
+    "recv_window_ms": 5000
+  },
+  "strategy": {
+    "default_profit_points": 8,
+    "default_stop_points": 2,
+    "default_qty_usdt": 20,
+    "entry_offset_bps": 50,
+    "entry_timeout_ms": 10000,
+    "max_dual_side_notional_usdt": 60,
+    "reduce_fraction_when_over_limit": 0.5,
+    "cooldown_ms": 1200,
+    "dry_run": false
+  }
+}
