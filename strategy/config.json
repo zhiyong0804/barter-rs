@@ -16,6 +16,7 @@
     "default_qty_usdt": 10,
     "entry_offset_bps": 150,
     "entry_timeout_ms": 10000,
+    "local_exit_poll_interval_ms": 500,
     "max_dual_side_notional_usdt": 60,
     "reduce_fraction_when_over_limit": 0.5,
     "cooldown_ms": 1200,

@@ -34,6 +34,8 @@ pub struct StrategyConfig {
     pub entry_offset_bps: Decimal,
     #[serde(default = "default_entry_timeout_ms")]
     pub entry_timeout_ms: u64,
+    #[serde(default = "default_local_exit_poll_interval_ms")]
+    pub local_exit_poll_interval_ms: u64,
     pub max_dual_side_notional_usdt: Decimal,
     pub reduce_fraction_when_over_limit: Decimal,
     pub cooldown_ms: u64,
@@ -47,6 +49,10 @@ fn default_entry_offset_bps() -> Decimal {
 
 fn default_entry_timeout_ms() -> u64 {
     10_000
+}
+
+fn default_local_exit_poll_interval_ms() -> u64 {
+    500
 }
 
 pub fn load_config(

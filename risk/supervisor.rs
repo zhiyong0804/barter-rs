@@ -132,18 +132,24 @@ impl PositionSupervisor {
             }
         }
 
-        let total_margin_exposure = exposures_by_symbol
-            .values()
-            .fold(Decimal::ZERO, |acc, exposure| {
-                acc + exposure.margin_exposure
-            });
-        let total_position_to_funds_ratio = if account.total_wallet_balance > Decimal::ZERO {
-            total_margin_exposure / account.total_wallet_balance
+        let total_estimated_margin_used =
+            positions_by_symbol
+                .iter()
+                .fold(Decimal::ZERO, |acc, (symbol, symbol_positions)| {
+                    acc + symbol_positions
+                        .iter()
+                        .fold(Decimal::ZERO, |symbol_acc, position| {
+                            symbol_acc
+                                + estimated_position_margin_used(position, market_state.get(symbol))
+                        })
+                });
+        let total_margin_usage_ratio = if account.total_wallet_balance > Decimal::ZERO {
+            total_estimated_margin_used / account.total_wallet_balance
         } else {
             Decimal::ZERO
         };
 
-        if total_position_to_funds_ratio >= self.config.risk.max_position_to_funds_ratio {
+        if total_margin_usage_ratio >= self.config.risk.max_position_to_funds_ratio {
             if let Some(last_order) = risk_state.latest_order.as_ref() {
                 if let Some(exposure) = exposures_by_symbol.get(&last_order.symbol) {
                     if let Some(decision) = evaluate_close_recent_order_decision(
@@ -151,8 +157,8 @@ impl PositionSupervisor {
                         &account,
                         exposure,
                         last_order,
-                        total_position_to_funds_ratio,
-                        total_margin_exposure,
+                        total_margin_usage_ratio,
+                        total_estimated_margin_used,
                     ) {
                         let cooldown_key = "GLOBAL:CLOSE_RECENT".to_owned();
                         if !cooldown_active(
@@ -169,11 +175,11 @@ impl PositionSupervisor {
             }
 
             tracing::warn!(
-                total_margin_exposure = %total_margin_exposure,
+                total_estimated_margin_used = %total_estimated_margin_used,
                 total_wallet_balance = %account.total_wallet_balance,
-                total_position_to_funds_ratio = %total_position_to_funds_ratio,
+                total_margin_usage_ratio = %total_margin_usage_ratio,
                 max_position_to_funds_ratio = %self.config.risk.max_position_to_funds_ratio,
-                "Total position-to-funds ratio exceeded threshold but no closable latest order found"
+                "Total margin-usage ratio exceeded threshold but no closable latest order found"
             );
         }
 
@@ -455,8 +461,8 @@ fn evaluate_close_recent_order_decision(
     account: &FuturesAccountInformation,
     exposure: &SymbolExposure,
     last_order: &OrderTradeUpdate,
-    total_position_to_funds_ratio: Decimal,
-    total_margin_exposure: Decimal,
+    total_margin_usage_ratio: Decimal,
+    total_estimated_margin_used: Decimal,
 ) -> Option<HedgeDecision> {
     let recent_qty = if last_order.filled_accumulated_quantity > Decimal::ZERO {
         last_order.filled_accumulated_quantity
@@ -467,7 +473,7 @@ fn evaluate_close_recent_order_decision(
     if recent_qty <= Decimal::ZERO {
         tracing::warn!(
             symbol = %exposure.symbol,
-            total_position_to_funds_ratio = %total_position_to_funds_ratio,
+            total_margin_usage_ratio = %total_margin_usage_ratio,
             last_order_status = %last_order.order_status,
             last_exec_type = %last_order.execution_type,
             "Exposure above threshold but last order quantity is zero, skipping close-recent rule"
@@ -506,9 +512,9 @@ fn evaluate_close_recent_order_decision(
         quantity = %quantity,
         side = ?side,
         position_side = ?position_side,
-        total_position_to_funds_ratio = %total_position_to_funds_ratio,
+        total_margin_usage_ratio = %total_margin_usage_ratio,
         max_position_to_funds_ratio = %config.risk.max_position_to_funds_ratio,
-        total_margin_exposure = %total_margin_exposure,
+        total_estimated_margin_used = %total_estimated_margin_used,
         "Close-recent-order rule triggered"
     );
 
@@ -518,11 +524,11 @@ fn evaluate_close_recent_order_decision(
         position_side,
         quantity,
         reason: format!(
-            "close_recent_order: total_position_to_funds_ratio={} >= {}, wallet_balance={}, total_margin_exposure={}, symbol_margin_exposure={}, recent_order_side={:?}, recent_order_position_side={}, recent_order_status={}, recent_order_exec_type={}, recent_order_qty={}, recent_order_filled_qty={}, recent_order_client_id={}",
-            total_position_to_funds_ratio,
+            "close_recent_order: total_margin_usage_ratio={} >= {}, wallet_balance={}, total_estimated_margin_used={}, symbol_margin_exposure={}, recent_order_side={:?}, recent_order_position_side={}, recent_order_status={}, recent_order_exec_type={}, recent_order_qty={}, recent_order_filled_qty={}, recent_order_client_id={}",
+            total_margin_usage_ratio,
             config.risk.max_position_to_funds_ratio,
             account.total_wallet_balance,
-            total_margin_exposure,
+            total_estimated_margin_used,
             exposure.margin_exposure,
             last_order.side,
             last_order.position_side.as_str(),
@@ -533,6 +539,31 @@ fn evaluate_close_recent_order_decision(
             last_order.client_order_id,
         ),
     })
+}
+
+fn estimated_position_margin_used(
+    position: &FuturesPositionRisk,
+    market: Option<&MarketSnapshot>,
+) -> Decimal {
+    let market_reference = if position.mark_price > Decimal::ZERO {
+        position.mark_price
+    } else {
+        market
+            .and_then(|snapshot| snapshot.reference_price)
+            .unwrap_or(Decimal::ZERO)
+    };
+
+    let abs_notional = if position.notional.abs() > Decimal::ZERO {
+        position.notional.abs()
+    } else {
+        position.position_amt.abs() * market_reference
+    };
+
+    if abs_notional <= Decimal::ZERO || position.leverage <= Decimal::ZERO {
+        Decimal::ZERO
+    } else {
+        abs_notional / position.leverage
+    }
 }
 
 fn build_symbol_exposure(

@@ -262,6 +262,7 @@ impl BinanceClient {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn place_stop_market(
         &self,
         symbol: &str,
@@ -305,6 +306,7 @@ impl BinanceClient {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn place_stop_limit(
         &self,
         symbol: &str,

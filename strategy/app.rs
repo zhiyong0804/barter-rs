@@ -9,13 +9,6 @@ use rust_decimal::Decimal;
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 
-fn is_algo_endpoint_error(error: &crate::binance::BinanceError) -> bool {
-    match error {
-        crate::binance::BinanceError::Api { body, .. } => body.contains("\"code\":-4120"),
-        _ => false,
-    }
-}
-
 #[derive(Debug, Clone)]
 struct ExecutionPlan {
     qty: Decimal,
@@ -48,13 +41,13 @@ fn build_execution_plan(
             CommandSide::Buy,
             PositionSide::Long,
             CommandSide::Sell,
-            PositionSide::Short,
+            PositionSide::Long,
         ),
         CommandSide::Sell => (
             CommandSide::Sell,
             PositionSide::Short,
             CommandSide::Buy,
-            PositionSide::Long,
+            PositionSide::Short,
         ),
     };
 
@@ -165,7 +158,14 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 continue;
             }
 
-            let result = execute_command(&binance, &config.strategy, &command).await;
+            let result = execute_command(
+                &binance,
+                &telegram,
+                update.chat_id,
+                &config.strategy,
+                &command,
+            )
+            .await;
             match result {
                 Ok(message) => {
                     last_execution_at = Instant::now();
@@ -198,6 +198,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 async fn execute_command(
     binance: &BinanceClient,
+    telegram: &TelegramClient,
+    notify_chat_id: i64,
     strategy: &crate::config::StrategyConfig,
     command: &TradeCommand,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
@@ -291,56 +293,53 @@ async fn execute_command(
             return Err("入场未成交，未创建止盈止损订单".into());
         }
 
-        binance
-            .place_limit(
-                &command.symbol,
-                plan.reverse_side,
-                plan.reverse_position_side,
-                filled_qty,
-                plan.tp_price,
-                &format!("s_tp_{}", now),
-            )
-            .await?;
+        maybe_reduce_if_notional_too_high(binance, strategy, command).await?;
 
-        let sl_client_order_id = format!("s_sl_{}", now);
-        if let Err(error) = binance
-            .place_stop_market(
-                &command.symbol,
-                plan.reverse_side,
-                plan.reverse_position_side,
-                filled_qty,
-                plan.sl_price,
-                &sl_client_order_id,
+        let monitor_binance = binance.clone();
+        let monitor_telegram = telegram.clone();
+        let monitor_chat_id = notify_chat_id;
+        let monitor_symbol = command.symbol.clone();
+        let monitor_side = command.side;
+        let monitor_reverse_side = plan.reverse_side;
+        let monitor_reverse_position_side = plan.reverse_position_side;
+        let monitor_tp_price = plan.tp_price;
+        let monitor_sl_price = plan.sl_price;
+        let monitor_poll_ms = strategy.local_exit_poll_interval_ms;
+        let monitor_telegram_for_errors = monitor_telegram.clone();
+
+        tokio::spawn(async move {
+            if let Err(error) = monitor_and_exit_locally(
+                monitor_binance,
+                monitor_telegram,
+                monitor_chat_id,
+                monitor_symbol,
+                monitor_side,
+                monitor_reverse_side,
+                monitor_reverse_position_side,
+                monitor_tp_price,
+                monitor_sl_price,
+                monitor_poll_ms,
             )
             .await
-        {
-            if is_algo_endpoint_error(&error) {
-                warn!(
-                    symbol = %command.symbol,
-                    sl_price = %plan.sl_price,
-                    "STOP_MARKET rejected with -4120, fallback to STOP limit order"
-                );
-
-                binance
-                    .place_stop_limit(
-                        &command.symbol,
-                        plan.reverse_side,
-                        plan.reverse_position_side,
-                        filled_qty,
-                        plan.sl_price,
-                        &sl_client_order_id,
-                    )
-                    .await?;
-            } else {
-                return Err(error.into());
+            {
+                error!(?error, "local tp/sl monitor failed");
+                let _ = monitor_telegram_for_errors
+                    .send_message(monitor_chat_id, &format!("本地止盈止损监控异常: {error}"))
+                    .await;
             }
-        }
+        });
 
-        maybe_reduce_if_notional_too_high(binance, strategy, command).await?;
+        info!(
+            symbol = %command.symbol,
+            poll_interval_ms = strategy.local_exit_poll_interval_ms,
+            tp_price = %plan.tp_price,
+            sl_price = %plan.sl_price,
+            "local tp/sl monitor started"
+        );
     }
 
     Ok(format!(
-        "已处理 {} {}: qty={}USDT(约{}), TP={}, SL={}, dry_run={}",
+        "已处理 {} {}: qty={}USDT(约{}), TP={}, SL={}, dry_run={} (本地盯盘市价止盈止损)",
         match command.side {
             CommandSide::Buy => "BUY",
             CommandSide::Sell => "SELL",
@@ -352,6 +351,144 @@ async fn execute_command(
         plan.sl_price,
         strategy.dry_run
     ))
+}
+
+async fn monitor_and_exit_locally(
+    binance: BinanceClient,
+    telegram: TelegramClient,
+    notify_chat_id: i64,
+    symbol: String,
+    entry_side: CommandSide,
+    close_side: CommandSide,
+    close_position_side: PositionSide,
+    tp_price: Decimal,
+    sl_price: Decimal,
+    poll_interval_ms: u64,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    loop {
+        tokio::time::sleep(Duration::from_millis(poll_interval_ms)).await;
+        let price = binance.fetch_price(&symbol).await?;
+
+        let trigger = match entry_side {
+            CommandSide::Buy => {
+                if price >= tp_price {
+                    Some("take_profit")
+                } else if price <= sl_price {
+                    Some("stop_loss")
+                } else {
+                    None
+                }
+            }
+            CommandSide::Sell => {
+                if price <= tp_price {
+                    Some("take_profit")
+                } else if price >= sl_price {
+                    Some("stop_loss")
+                } else {
+                    None
+                }
+            }
+        };
+
+        let Some(trigger) = trigger else {
+            continue;
+        };
+
+        let positions = binance.fetch_positions(&symbol).await?;
+        let close_qty = positions
+            .iter()
+            .filter_map(|position| {
+                let same_side = match close_position_side {
+                    PositionSide::Long => position.position_side == "LONG",
+                    PositionSide::Short => position.position_side == "SHORT",
+                };
+
+                if same_side && position.position_amt.abs() > Decimal::ZERO {
+                    Some(position.position_amt.abs())
+                } else {
+                    None
+                }
+            })
+            .fold(Decimal::ZERO, |acc, qty| acc + qty);
+
+        if close_qty <= Decimal::ZERO {
+            warn!(
+                symbol = %symbol,
+                trigger = trigger,
+                price = %price,
+                "local tp/sl triggered but no closable position found"
+            );
+
+            let _ = telegram
+                .send_message(
+                    notify_chat_id,
+                    &format!(
+                        "{} 触发{}但未找到可平仓位，当前价={}。请手动检查仓位。",
+                        symbol,
+                        if trigger == "take_profit" {
+                            "止盈"
+                        } else {
+                            "止损"
+                        },
+                        price
+                    ),
+                )
+                .await;
+            return Ok(());
+        }
+
+        let ts = chrono::Utc::now().timestamp_millis();
+        let client_order_id = format!(
+            "s_x_{}_{}",
+            if trigger == "take_profit" { "tp" } else { "sl" },
+            ts
+        );
+
+        binance
+            .place_market(
+                &symbol,
+                close_side,
+                close_position_side,
+                close_qty,
+                &client_order_id,
+            )
+            .await?;
+
+        info!(
+            symbol = %symbol,
+            trigger = trigger,
+            trigger_price = %price,
+            close_side = ?close_side,
+            close_position_side = %match close_position_side { PositionSide::Long => "LONG", PositionSide::Short => "SHORT" },
+            close_qty = %close_qty,
+            client_order_id = %client_order_id,
+            "local tp/sl market close submitted"
+        );
+
+        let _ = telegram
+            .send_message(
+                notify_chat_id,
+                &format!(
+                    "{} 已触发{}并市价平仓：price={}，qty={}，side={:?}，position_side={}",
+                    symbol,
+                    if trigger == "take_profit" {
+                        "止盈"
+                    } else {
+                        "止损"
+                    },
+                    price,
+                    close_qty,
+                    close_side,
+                    match close_position_side {
+                        PositionSide::Long => "LONG",
+                        PositionSide::Short => "SHORT",
+                    }
+                ),
+            )
+            .await;
+
+        return Ok(());
+    }
 }
 
 #[cfg(test)]
@@ -373,7 +510,7 @@ mod tests {
         assert!(matches!(plan.entry_side, CommandSide::Buy));
         assert!(matches!(plan.entry_position_side, PositionSide::Long));
         assert!(matches!(plan.reverse_side, CommandSide::Sell));
-        assert!(matches!(plan.reverse_position_side, PositionSide::Short));
+        assert!(matches!(plan.reverse_position_side, PositionSide::Long));
         assert_eq!(plan.tp_price, Decimal::from(105));
         assert_eq!(plan.sl_price, Decimal::from(99));
     }
@@ -393,7 +530,7 @@ mod tests {
         assert!(matches!(plan.entry_side, CommandSide::Sell));
         assert!(matches!(plan.entry_position_side, PositionSide::Short));
         assert!(matches!(plan.reverse_side, CommandSide::Buy));
-        assert!(matches!(plan.reverse_position_side, PositionSide::Long));
+        assert!(matches!(plan.reverse_position_side, PositionSide::Short));
         assert_eq!(plan.tp_price, Decimal::from(95));
         assert_eq!(plan.sl_price, Decimal::from(101));
     }
@@ -479,13 +616,14 @@ async fn build_status_message(
         .map(|value| value.trim_start_matches('$').to_uppercase());
 
     let mut message = format!(
-        "策略状态\n- dry_run={}\n- default_profit_points={}\n- default_stop_points={}\n- default_qty_usdt={}\n- entry_offset_bps={}\n- entry_timeout_ms={}\n- max_dual_side_notional_usdt={}\n- reduce_fraction_when_over_limit={}\n- cooldown_ms={}",
+        "策略状态\n- dry_run={}\n- default_profit_points={}\n- default_stop_points={}\n- default_qty_usdt={}\n- entry_offset_bps={}\n- entry_timeout_ms={}\n- local_exit_poll_interval_ms={}\n- max_dual_side_notional_usdt={}\n- reduce_fraction_when_over_limit={}\n- cooldown_ms={}",
         strategy.dry_run,
         strategy.default_profit_points,
         strategy.default_stop_points,
         strategy.default_qty_usdt,
         strategy.entry_offset_bps,
         strategy.entry_timeout_ms,
+        strategy.local_exit_poll_interval_ms,
         strategy.max_dual_side_notional_usdt,
         strategy.reduce_fraction_when_over_limit,
         strategy.cooldown_ms
