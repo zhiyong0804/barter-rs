@@ -149,5 +149,6 @@ async fn apply_account_update(
 
 async fn apply_order_update(risk_state: &SharedRiskState, order: OrderTradeUpdate) {
     let mut state = risk_state.write().await;
-    state.last_orders.insert(order.symbol.clone(), order);
+    state.last_orders.insert(order.symbol.clone(), order.clone());
+    state.latest_order = Some(order);
 }

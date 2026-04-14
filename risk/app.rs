@@ -38,6 +38,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             })
             .collect(),
         last_orders: HashMap::new(),
+        latest_order: None,
     }));
     let market_state: SharedMarketState = Arc::new(RwLock::new(HashMap::new()));
     let (trigger_tx, trigger_rx) = mpsc::unbounded_channel();

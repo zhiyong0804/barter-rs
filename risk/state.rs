@@ -21,6 +21,7 @@ pub struct RiskState {
     pub account: FuturesAccountInformation,
     pub positions: HashMap<String, FuturesPositionRisk>,
     pub last_orders: HashMap<String, OrderTradeUpdate>,
+    pub latest_order: Option<OrderTradeUpdate>,
 }
 
 #[derive(Debug, Clone)]

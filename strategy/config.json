@@ -12,9 +12,9 @@
   },
   "strategy": {
     "default_profit_points": 8,
-    "default_stop_points": 2,
-    "default_qty_usdt": 20,
-    "entry_offset_bps": 50,
+    "default_stop_points": 3,
+    "default_qty_usdt": 10,
+    "entry_offset_bps": 150,
     "entry_timeout_ms": 10000,
     "max_dual_side_notional_usdt": 60,
     "reduce_fraction_when_over_limit": 0.5,

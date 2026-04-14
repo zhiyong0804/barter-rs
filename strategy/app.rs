@@ -9,6 +9,13 @@ use rust_decimal::Decimal;
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 
+fn is_algo_endpoint_error(error: &crate::binance::BinanceError) -> bool {
+    match error {
+        crate::binance::BinanceError::Api { body, .. } => body.contains("\"code\":-4120"),
+        _ => false,
+    }
+}
+
 #[derive(Debug, Clone)]
 struct ExecutionPlan {
     qty: Decimal,
@@ -295,16 +302,39 @@ async fn execute_command(
             )
             .await?;
 
-        binance
+        let sl_client_order_id = format!("s_sl_{}", now);
+        if let Err(error) = binance
             .place_stop_market(
                 &command.symbol,
                 plan.reverse_side,
                 plan.reverse_position_side,
                 filled_qty,
                 plan.sl_price,
-                &format!("s_sl_{}", now),
+                &sl_client_order_id,
             )
-            .await?;
+            .await
+        {
+            if is_algo_endpoint_error(&error) {
+                warn!(
+                    symbol = %command.symbol,
+                    sl_price = %plan.sl_price,
+                    "STOP_MARKET rejected with -4120, fallback to STOP limit order"
+                );
+
+                binance
+                    .place_stop_limit(
+                        &command.symbol,
+                        plan.reverse_side,
+                        plan.reverse_position_side,
+                        filled_qty,
+                        plan.sl_price,
+                        &sl_client_order_id,
+                    )
+                    .await?;
+            } else {
+                return Err(error.into());
+            }
+        }
 
         maybe_reduce_if_notional_too_high(binance, strategy, command).await?;
     }

@@ -42,8 +42,14 @@ pub struct RiskConfig {
     pub min_liquidation_buffer_ratio: Decimal,
     pub max_symbol_loss_ratio: Decimal,
     pub max_account_loss_ratio: Decimal,
+    #[serde(default = "default_max_position_to_funds_ratio")]
+    pub max_position_to_funds_ratio: Decimal,
     #[serde(default)]
     pub min_position_notional_usdt: Decimal,
+}
+
+fn default_max_position_to_funds_ratio() -> Decimal {
+    Decimal::new(30, 2)
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

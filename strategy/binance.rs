@@ -3,9 +3,10 @@ use crate::config::BinanceConfig;
 use chrono::Utc;
 use hmac::Mac;
 use reqwest::{header::CONTENT_TYPE, Client};
-use rust_decimal::Decimal;
-use serde::Deserialize;
+use rust_decimal::{Decimal, RoundingStrategy};
+use serde::{de::DeserializeOwned, Deserialize};
 use sha2::Sha256;
+use tracing::info;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BinanceError {
@@ -88,6 +89,33 @@ pub struct OrderInfo {
     pub executed_qty: Decimal,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct ExchangeInfoResponse {
+    symbols: Vec<ExchangeInfoSymbol>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ExchangeInfoSymbol {
+    symbol: String,
+    #[serde(rename = "quantityPrecision")]
+    quantity_precision: u32,
+    #[serde(rename = "pricePrecision")]
+    price_precision: u32,
+    filters: Vec<ExchangeInfoFilter>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ExchangeInfoFilter {
+    #[serde(rename = "filterType")]
+    filter_type: String,
+    #[serde(rename = "stepSize")]
+    step_size: Option<String>,
+    #[serde(rename = "tickSize")]
+    tick_size: Option<String>,
+    #[serde(rename = "minQty")]
+    min_qty: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct BinanceClient {
     http: Client,
@@ -164,6 +192,21 @@ impl BinanceClient {
         quantity: Decimal,
         client_order_id: &str,
     ) -> Result<(), BinanceError> {
+        let original_quantity = quantity;
+        let quantity = self.normalise_quantity(symbol, quantity, true).await?;
+
+        info!(
+            endpoint = "/fapi/v1/order",
+            order_type = "MARKET",
+            symbol = %symbol,
+            side = %side_to_str(side),
+            position_side = %position_side.as_str(),
+            quantity_raw = %original_quantity,
+            quantity = %quantity,
+            client_order_id = %client_order_id,
+            "placing order"
+        );
+
         let mut params = vec![
             ("symbol", symbol.to_owned()),
             ("side", side_to_str(side).to_owned()),
@@ -185,6 +228,26 @@ impl BinanceClient {
         price: Decimal,
         client_order_id: &str,
     ) -> Result<(), BinanceError> {
+        let original_quantity = quantity;
+        let original_price = price;
+        let quantity = self.normalise_quantity(symbol, quantity, false).await?;
+        let price = self.normalise_price(symbol, price).await?;
+
+        info!(
+            endpoint = "/fapi/v1/order",
+            order_type = "LIMIT",
+            time_in_force = "GTC",
+            symbol = %symbol,
+            side = %side_to_str(side),
+            position_side = %position_side.as_str(),
+            quantity_raw = %original_quantity,
+            quantity = %quantity,
+            price_raw = %original_price,
+            price = %price,
+            client_order_id = %client_order_id,
+            "placing order"
+        );
+
         let mut params = vec![
             ("symbol", symbol.to_owned()),
             ("side", side_to_str(side).to_owned()),
@@ -208,11 +271,77 @@ impl BinanceClient {
         stop_price: Decimal,
         client_order_id: &str,
     ) -> Result<(), BinanceError> {
+        let original_quantity = quantity;
+        let original_stop_price = stop_price;
+        let quantity = self.normalise_quantity(symbol, quantity, false).await?;
+        let stop_price = self.normalise_price(symbol, stop_price).await?;
+
+        info!(
+            endpoint = "/fapi/v1/order",
+            order_type = "STOP_MARKET",
+            working_type = "MARK_PRICE",
+            symbol = %symbol,
+            side = %side_to_str(side),
+            position_side = %position_side.as_str(),
+            quantity_raw = %original_quantity,
+            quantity = %quantity,
+            stop_price_raw = %original_stop_price,
+            stop_price = %stop_price,
+            client_order_id = %client_order_id,
+            "placing order"
+        );
+
         let mut params = vec![
             ("symbol", symbol.to_owned()),
             ("side", side_to_str(side).to_owned()),
             ("positionSide", position_side.as_str().to_owned()),
             ("type", "STOP_MARKET".to_owned()),
+            ("workingType", "MARK_PRICE".to_owned()),
+            ("stopPrice", decimal_to_string(stop_price)),
+            ("quantity", decimal_to_string(quantity)),
+            ("newClientOrderId", client_order_id.to_owned()),
+        ];
+        self.signed_post("/fapi/v1/order", &mut params).await?;
+        Ok(())
+    }
+
+    pub async fn place_stop_limit(
+        &self,
+        symbol: &str,
+        side: CommandSide,
+        position_side: PositionSide,
+        quantity: Decimal,
+        stop_price: Decimal,
+        client_order_id: &str,
+    ) -> Result<(), BinanceError> {
+        let original_quantity = quantity;
+        let original_stop_price = stop_price;
+        let quantity = self.normalise_quantity(symbol, quantity, false).await?;
+        let stop_price = self.normalise_price(symbol, stop_price).await?;
+
+        info!(
+            endpoint = "/fapi/v1/order",
+            order_type = "STOP",
+            time_in_force = "GTC",
+            working_type = "MARK_PRICE",
+            symbol = %symbol,
+            side = %side_to_str(side),
+            position_side = %position_side.as_str(),
+            quantity_raw = %original_quantity,
+            quantity = %quantity,
+            stop_price_raw = %original_stop_price,
+            stop_price = %stop_price,
+            client_order_id = %client_order_id,
+            "placing order"
+        );
+
+        let mut params = vec![
+            ("symbol", symbol.to_owned()),
+            ("side", side_to_str(side).to_owned()),
+            ("positionSide", position_side.as_str().to_owned()),
+            ("type", "STOP".to_owned()),
+            ("timeInForce", "GTC".to_owned()),
+            ("price", decimal_to_string(stop_price)),
             ("workingType", "MARK_PRICE".to_owned()),
             ("stopPrice", decimal_to_string(stop_price)),
             ("quantity", decimal_to_string(quantity)),
@@ -354,6 +483,174 @@ impl BinanceClient {
         }
 
         Ok(())
+    }
+
+    async fn unsigned_get<T>(
+        &self,
+        path: &str,
+        params: Vec<(&str, String)>,
+    ) -> Result<T, BinanceError>
+    where
+        T: DeserializeOwned,
+    {
+        let query = params
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect::<Vec<_>>()
+            .join("&");
+
+        let url = if query.is_empty() {
+            format!("{}{}", self.rest_base_url, path)
+        } else {
+            format!("{}{}?{}", self.rest_base_url, path, query)
+        };
+
+        let response = self.http.get(url).send().await?;
+        let status = response.status();
+        let body = response.text().await?;
+        if !status.is_success() {
+            return Err(BinanceError::Api { status, body });
+        }
+
+        serde_json::from_str::<T>(&body)
+            .map_err(|err| BinanceError::InvalidResponse(err.to_string()))
+    }
+
+    async fn fetch_exchange_symbol_info(
+        &self,
+        symbol: &str,
+    ) -> Result<ExchangeInfoSymbol, BinanceError> {
+        let exchange_info: ExchangeInfoResponse = self
+            .unsigned_get("/fapi/v1/exchangeInfo", vec![("symbol", symbol.to_owned())])
+            .await?;
+
+        exchange_info
+            .symbols
+            .into_iter()
+            .find(|item| item.symbol == symbol)
+            .ok_or_else(|| {
+                BinanceError::InvalidResponse(format!("symbol not found in exchangeInfo: {symbol}"))
+            })
+    }
+
+    async fn normalise_quantity(
+        &self,
+        symbol: &str,
+        quantity: Decimal,
+        prefer_market_lot_size: bool,
+    ) -> Result<Decimal, BinanceError> {
+        if quantity <= Decimal::ZERO {
+            return Err(BinanceError::InvalidResponse(format!(
+                "invalid non-positive quantity for {symbol}: {quantity}"
+            )));
+        }
+
+        let symbol_info = self.fetch_exchange_symbol_info(symbol).await?;
+
+        let lot_filter = if prefer_market_lot_size {
+            symbol_info
+                .filters
+                .iter()
+                .find(|filter| filter.filter_type == "MARKET_LOT_SIZE")
+                .or_else(|| {
+                    symbol_info
+                        .filters
+                        .iter()
+                        .find(|filter| filter.filter_type == "LOT_SIZE")
+                })
+        } else {
+            symbol_info
+                .filters
+                .iter()
+                .find(|filter| filter.filter_type == "LOT_SIZE")
+                .or_else(|| {
+                    symbol_info
+                        .filters
+                        .iter()
+                        .find(|filter| filter.filter_type == "MARKET_LOT_SIZE")
+                })
+        };
+
+        let mut normalised = quantity;
+        if let Some(filter) = lot_filter {
+            if let Some(step_size) = &filter.step_size {
+                let step = step_size.parse::<Decimal>().map_err(|error| {
+                    BinanceError::InvalidResponse(format!(
+                        "invalid stepSize for {symbol}: {step_size} ({error})"
+                    ))
+                })?;
+
+                if step > Decimal::ZERO {
+                    normalised = (normalised / step).floor() * step;
+                }
+            }
+
+            if let Some(min_qty) = &filter.min_qty {
+                let min = min_qty.parse::<Decimal>().map_err(|error| {
+                    BinanceError::InvalidResponse(format!(
+                        "invalid minQty for {symbol}: {min_qty} ({error})"
+                    ))
+                })?;
+
+                if normalised < min {
+                    return Err(BinanceError::InvalidResponse(format!(
+                        "quantity {normalised} below minQty {min} for {symbol}"
+                    )));
+                }
+            }
+        }
+
+        normalised = normalised
+            .round_dp_with_strategy(symbol_info.quantity_precision, RoundingStrategy::ToZero);
+
+        if normalised <= Decimal::ZERO {
+            return Err(BinanceError::InvalidResponse(format!(
+                "normalised quantity became non-positive for {symbol}: {normalised}"
+            )));
+        }
+
+        Ok(normalised)
+    }
+
+    async fn normalise_price(&self, symbol: &str, price: Decimal) -> Result<Decimal, BinanceError> {
+        if price <= Decimal::ZERO {
+            return Err(BinanceError::InvalidResponse(format!(
+                "invalid non-positive price for {symbol}: {price}"
+            )));
+        }
+
+        let symbol_info = self.fetch_exchange_symbol_info(symbol).await?;
+        let mut normalised = price;
+
+        let price_filter = symbol_info
+            .filters
+            .iter()
+            .find(|filter| filter.filter_type == "PRICE_FILTER");
+
+        if let Some(filter) = price_filter {
+            if let Some(tick_size) = &filter.tick_size {
+                let tick = tick_size.parse::<Decimal>().map_err(|error| {
+                    BinanceError::InvalidResponse(format!(
+                        "invalid tickSize for {symbol}: {tick_size} ({error})"
+                    ))
+                })?;
+
+                if tick > Decimal::ZERO {
+                    normalised = (normalised / tick).floor() * tick;
+                }
+            }
+        }
+
+        normalised = normalised
+            .round_dp_with_strategy(symbol_info.price_precision, RoundingStrategy::ToZero);
+
+        if normalised <= Decimal::ZERO {
+            return Err(BinanceError::InvalidResponse(format!(
+                "normalised price became non-positive for {symbol}: {normalised}"
+            )));
+        }
+
+        Ok(normalised)
     }
 
     fn signed_query(&self, mut params: Vec<(&str, String)>) -> Result<String, BinanceError> {

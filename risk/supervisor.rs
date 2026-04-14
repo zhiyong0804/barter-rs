@@ -123,13 +123,61 @@ impl PositionSupervisor {
                 .push(position);
         }
 
-        for (symbol, symbol_positions) in positions_by_symbol {
-            let Some(exposure) =
-                build_symbol_exposure(&symbol, &symbol_positions, market_state.get(&symbol))
-            else {
-                continue;
-            };
+        let mut exposures_by_symbol: HashMap<String, SymbolExposure> = HashMap::new();
+        for (symbol, symbol_positions) in &positions_by_symbol {
+            if let Some(exposure) =
+                build_symbol_exposure(symbol, symbol_positions, market_state.get(symbol))
+            {
+                exposures_by_symbol.insert(symbol.clone(), exposure);
+            }
+        }
 
+        let total_margin_exposure = exposures_by_symbol
+            .values()
+            .fold(Decimal::ZERO, |acc, exposure| {
+                acc + exposure.margin_exposure
+            });
+        let total_position_to_funds_ratio = if account.total_wallet_balance > Decimal::ZERO {
+            total_margin_exposure / account.total_wallet_balance
+        } else {
+            Decimal::ZERO
+        };
+
+        if total_position_to_funds_ratio >= self.config.risk.max_position_to_funds_ratio {
+            if let Some(last_order) = risk_state.latest_order.as_ref() {
+                if let Some(exposure) = exposures_by_symbol.get(&last_order.symbol) {
+                    if let Some(decision) = evaluate_close_recent_order_decision(
+                        &self.config,
+                        &account,
+                        exposure,
+                        last_order,
+                        total_position_to_funds_ratio,
+                        total_margin_exposure,
+                    ) {
+                        let cooldown_key = "GLOBAL:CLOSE_RECENT".to_owned();
+                        if !cooldown_active(
+                            cooldowns,
+                            &cooldown_key,
+                            self.config.hedge.cooldown_secs,
+                        ) {
+                            self.execute_decision(&decision).await?;
+                            cooldowns.insert(cooldown_key, Instant::now());
+                        }
+                        return Ok(());
+                    }
+                }
+            }
+
+            tracing::warn!(
+                total_margin_exposure = %total_margin_exposure,
+                total_wallet_balance = %account.total_wallet_balance,
+                total_position_to_funds_ratio = %total_position_to_funds_ratio,
+                max_position_to_funds_ratio = %self.config.risk.max_position_to_funds_ratio,
+                "Total position-to-funds ratio exceeded threshold but no closable latest order found"
+            );
+        }
+
+        for (symbol, exposure) in exposures_by_symbol {
             let Some(decision) = evaluate_hedge_decision(
                 &self.config,
                 &account,
@@ -145,45 +193,55 @@ impl PositionSupervisor {
                 continue;
             }
 
-            if self.config.monitor.dry_run {
-                info!(
-                    symbol = %decision.symbol,
-                    side = ?decision.side,
-                    quantity = %decision.quantity,
-                    reason = %decision.reason,
-                    "Dry-run hedge triggered"
-                );
-            } else {
-                let timestamp_ms = chrono::Utc::now().timestamp_millis();
-                let symbol_prefix = decision.symbol.chars().take(3).collect::<String>();
-                let client_order_id = format!(
-                    "h{}{}",
-                    symbol_prefix.to_lowercase(),
-                    timestamp_ms % 1_000_000_000 // last 9 digits for uniqueness
-                );
-                let ack = self
-                    .client
-                    .place_market_hedge(HedgeOrderRequest {
-                        symbol: decision.symbol.clone(),
-                        side: decision.side,
-                        position_side: decision.position_side,
-                        quantity: decision.quantity,
-                        client_order_id,
-                    })
-                    .await?;
-
-                info!(
-                    symbol = %ack.symbol,
-                    order_id = ack.order_id,
-                    client_order_id = %ack.client_order_id,
-                    status = ?ack.status,
-                    reason = %decision.reason,
-                    "Hedge order placed"
-                );
-            }
+            self.execute_decision(&decision).await?;
 
             cooldowns.insert(cooldown_key, Instant::now());
         }
+
+        Ok(())
+    }
+
+    async fn execute_decision(
+        &self,
+        decision: &HedgeDecision,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if self.config.monitor.dry_run {
+            info!(
+                symbol = %decision.symbol,
+                side = ?decision.side,
+                quantity = %decision.quantity,
+                reason = %decision.reason,
+                "Dry-run hedge triggered"
+            );
+            return Ok(());
+        }
+
+        let timestamp_ms = chrono::Utc::now().timestamp_millis();
+        let symbol_prefix = decision.symbol.chars().take(3).collect::<String>();
+        let client_order_id = format!(
+            "h{}{}",
+            symbol_prefix.to_lowercase(),
+            timestamp_ms % 1_000_000_000 // last 9 digits for uniqueness
+        );
+        let ack = self
+            .client
+            .place_market_hedge(HedgeOrderRequest {
+                symbol: decision.symbol.clone(),
+                side: decision.side,
+                position_side: decision.position_side,
+                quantity: decision.quantity,
+                client_order_id,
+            })
+            .await?;
+
+        info!(
+            symbol = %ack.symbol,
+            order_id = ack.order_id,
+            client_order_id = %ack.client_order_id,
+            status = ?ack.status,
+            reason = %decision.reason,
+            "Hedge order placed"
+        );
 
         Ok(())
     }
@@ -389,6 +447,91 @@ fn evaluate_hedge_decision(
         position_side,
         quantity,
         reason,
+    })
+}
+
+fn evaluate_close_recent_order_decision(
+    config: &AppConfig,
+    account: &FuturesAccountInformation,
+    exposure: &SymbolExposure,
+    last_order: &OrderTradeUpdate,
+    total_position_to_funds_ratio: Decimal,
+    total_margin_exposure: Decimal,
+) -> Option<HedgeDecision> {
+    let recent_qty = if last_order.filled_accumulated_quantity > Decimal::ZERO {
+        last_order.filled_accumulated_quantity
+    } else {
+        last_order.quantity
+    };
+
+    if recent_qty <= Decimal::ZERO {
+        tracing::warn!(
+            symbol = %exposure.symbol,
+            total_position_to_funds_ratio = %total_position_to_funds_ratio,
+            last_order_status = %last_order.order_status,
+            last_exec_type = %last_order.execution_type,
+            "Exposure above threshold but last order quantity is zero, skipping close-recent rule"
+        );
+        return None;
+    }
+
+    let quantity = recent_qty.min(exposure.net_qty.abs());
+    if quantity <= Decimal::ZERO {
+        return None;
+    }
+
+    let (side, position_side) = match config.monitor.position_mode {
+        PositionMode::OneWay => {
+            if exposure.net_qty > Decimal::ZERO {
+                (Side::Sell, None)
+            } else {
+                (Side::Buy, None)
+            }
+        }
+        PositionMode::Hedge => match last_order.position_side {
+            BinancePositionSide::Long => (Side::Sell, Some(BinancePositionSide::Long)),
+            BinancePositionSide::Short => (Side::Buy, Some(BinancePositionSide::Short)),
+            BinancePositionSide::Both => {
+                if exposure.net_qty > Decimal::ZERO {
+                    (Side::Sell, Some(BinancePositionSide::Long))
+                } else {
+                    (Side::Buy, Some(BinancePositionSide::Short))
+                }
+            }
+        },
+    };
+
+    tracing::warn!(
+        symbol = %exposure.symbol,
+        quantity = %quantity,
+        side = ?side,
+        position_side = ?position_side,
+        total_position_to_funds_ratio = %total_position_to_funds_ratio,
+        max_position_to_funds_ratio = %config.risk.max_position_to_funds_ratio,
+        total_margin_exposure = %total_margin_exposure,
+        "Close-recent-order rule triggered"
+    );
+
+    Some(HedgeDecision {
+        symbol: exposure.symbol.clone(),
+        side,
+        position_side,
+        quantity,
+        reason: format!(
+            "close_recent_order: total_position_to_funds_ratio={} >= {}, wallet_balance={}, total_margin_exposure={}, symbol_margin_exposure={}, recent_order_side={:?}, recent_order_position_side={}, recent_order_status={}, recent_order_exec_type={}, recent_order_qty={}, recent_order_filled_qty={}, recent_order_client_id={}",
+            total_position_to_funds_ratio,
+            config.risk.max_position_to_funds_ratio,
+            account.total_wallet_balance,
+            total_margin_exposure,
+            exposure.margin_exposure,
+            last_order.side,
+            last_order.position_side.as_str(),
+            last_order.order_status,
+            last_order.execution_type,
+            last_order.quantity,
+            last_order.filled_accumulated_quantity,
+            last_order.client_order_id,
+        ),
     })
 }
 

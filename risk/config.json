@@ -21,6 +21,7 @@
     "min_liquidation_buffer_ratio": 0.2,
     "max_symbol_loss_ratio": 0.10,
     "max_account_loss_ratio": 0.4,
+    "max_position_to_funds_ratio": 0.30,
     "min_position_notional_usdt": 2
   },
   "hedge": {
