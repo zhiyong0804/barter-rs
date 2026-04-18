@@ -207,63 +207,89 @@ async fn append_with_rollback(
 pub async fn run_market_streams(
     output_dir: &str,
     symbols: Vec<SymbolSpec>,
+    subscribe_all: bool,
     engine: &mut StrategyEngine,
     telegram_notifier: Option<&TelegramNotifier>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     fs::create_dir_all(output_dir).await?;
     let (writer, writer_task) = AsyncRollbackWriter::start(2048);
 
-    let trade_subs = symbols.iter().map(|item| {
-        (
-            format!("{}|trade", item.symbol),
-            BinanceFuturesUsd::default(),
-            item.base.clone(),
-            item.quote.clone(),
-            MarketDataInstrumentKind::Perpetual,
-            PublicTrades,
-        )
-    });
+    let route_count = if subscribe_all { 8 } else { 1 };
+    let symbol_groups = split_symbols_into_routes(&symbols, route_count);
 
-    let candle_1m_subs = symbols.iter().map(|item| {
-        (
-            format!("{}|kline_1m", item.symbol),
-            BinanceFuturesUsd::default(),
-            item.base.clone(),
-            item.quote.clone(),
-            MarketDataInstrumentKind::Perpetual,
-            Candles1m,
-        )
-    });
+    info!(
+        subscribe_all,
+        symbols_total = symbols.len(),
+        routes = symbol_groups.len(),
+        "initialising market stream subscriptions"
+    );
 
-    let candle_1h_subs = symbols.iter().map(|item| {
-        (
-            format!("{}|kline_1h", item.symbol),
-            BinanceFuturesUsd::default(),
-            item.base.clone(),
-            item.quote.clone(),
-            MarketDataInstrumentKind::Perpetual,
-            Candles1h,
-        )
-    });
+    let mut builder = Streams::builder_multi();
+    for group in &symbol_groups {
+        let trade_subs = group
+            .iter()
+            .map(|item| {
+                (
+                    format!("{}|trade", item.symbol),
+                    BinanceFuturesUsd::default(),
+                    item.base.clone(),
+                    item.quote.clone(),
+                    MarketDataInstrumentKind::Perpetual,
+                    PublicTrades,
+                )
+            })
+            .collect::<Vec<_>>();
 
-    let l1_subs = symbols.iter().map(|item| {
-        (
-            format!("{}|book_ticker", item.symbol),
-            BinanceFuturesUsd::default(),
-            item.base.clone(),
-            item.quote.clone(),
-            MarketDataInstrumentKind::Perpetual,
-            OrderBooksL1,
-        )
-    });
+        let candle_1m_subs = group
+            .iter()
+            .map(|item| {
+                (
+                    format!("{}|kline_1m", item.symbol),
+                    BinanceFuturesUsd::default(),
+                    item.base.clone(),
+                    item.quote.clone(),
+                    MarketDataInstrumentKind::Perpetual,
+                    Candles1m,
+                )
+            })
+            .collect::<Vec<_>>();
 
-    let streams: Streams<MarketStreamResult<String, DataKind>> = Streams::builder_multi()
-        .add(Streams::<PublicTrades>::builder().subscribe(trade_subs))
-        .add(Streams::<Candles1m>::builder().subscribe(candle_1m_subs))
-        .add(Streams::<Candles1h>::builder().subscribe(candle_1h_subs))
-        .add(Streams::<OrderBooksL1>::builder().subscribe(l1_subs))
-        .init()
-        .await?;
+        let candle_1h_subs = group
+            .iter()
+            .map(|item| {
+                (
+                    format!("{}|kline_1h", item.symbol),
+                    BinanceFuturesUsd::default(),
+                    item.base.clone(),
+                    item.quote.clone(),
+                    MarketDataInstrumentKind::Perpetual,
+                    Candles1h,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let l1_subs = group
+            .iter()
+            .map(|item| {
+                (
+                    format!("{}|book_ticker", item.symbol),
+                    BinanceFuturesUsd::default(),
+                    item.base.clone(),
+                    item.quote.clone(),
+                    MarketDataInstrumentKind::Perpetual,
+                    OrderBooksL1,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        builder = builder
+            .add(Streams::<PublicTrades>::builder().subscribe(trade_subs))
+            .add(Streams::<Candles1m>::builder().subscribe(candle_1m_subs))
+            .add(Streams::<Candles1h>::builder().subscribe(candle_1h_subs))
+            .add(Streams::<OrderBooksL1>::builder().subscribe(l1_subs));
+    }
+
+    let streams: Streams<MarketStreamResult<String, DataKind>> = builder.init().await?;
 
     info!(
         symbols = %symbols.iter().map(|item| item.symbol.clone()).collect::<Vec<_>>().join(","),
@@ -301,6 +327,21 @@ pub async fn run_market_streams(
     }
 
     Ok(())
+}
+
+fn split_symbols_into_routes(symbols: &[SymbolSpec], route_count: usize) -> Vec<Vec<SymbolSpec>> {
+    let route_count = route_count.max(1);
+    if symbols.is_empty() {
+        return Vec::new();
+    }
+
+    let mut routes = vec![Vec::new(); route_count.min(symbols.len())];
+    let routes_len = routes.len();
+    for (index, symbol) in symbols.iter().cloned().enumerate() {
+        routes[index % routes_len].push(symbol);
+    }
+
+    routes
 }
 
 async fn persist_event(

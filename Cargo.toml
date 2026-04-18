@@ -14,7 +14,7 @@ path = "strategy/main.rs"
 
 [[bin]]
 name = "miraelis"
-path = "miraelis/main.rs"
+path = "miraelis/src/main.rs"
 
 [workspace]
 resolver = "3"
@@ -97,9 +97,12 @@ prost = { version = "0.12.4" }
 [dependencies]
 barter.workspace = true
 barter-data.workspace = true
+barter-integration.workspace = true
 barter-instrument.workspace = true
 chrono.workspace = true
+crossbeam-channel = "0.5"
 futures.workspace = true
+futures-util.workspace = true
 hex.workspace = true
 hmac.workspace = true
 reqwest.workspace = true
@@ -108,7 +111,8 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["fs"] }
 tokio-tungstenite.workspace = true
 tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 url.workspace = true

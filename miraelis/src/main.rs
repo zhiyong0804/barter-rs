@@ -8,7 +8,11 @@ use barter_integration::{
 };
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
-use std::{borrow::Cow, path::Path, time::Duration};
+use std::{
+    borrow::Cow,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use thiserror::Error;
 use tokio::fs;
 use tracing::{error, info, warn};
@@ -96,9 +100,10 @@ impl RestRequest for FetchBinanceFuturesExchangeInfo {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    init_logging();
+    init_logging_with_prefix("miraelis.log");
 
-    let config = load_config("miraelis/config.json").await?;
+    let config_override = parse_config_arg()?;
+    let (config, _config_path, _project_root) = load_runtime_config(config_override).await?;
     if !config.subscribe_all && config.symbols.is_empty() {
         return Err("config.symbols cannot be empty".into());
     }
@@ -156,6 +161,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     quotation::run_market_streams(
         &config.market_data_output_dir,
         symbol_specs,
+        config.subscribe_all,
         &mut engine,
         telegram_notifier.as_ref(),
     )
@@ -301,6 +307,117 @@ async fn load_config(path: &str) -> Result<AppConfig, Box<dyn std::error::Error 
     let content = fs::read_to_string(path).await?;
     let config = serde_json::from_str::<AppConfig>(&content)?;
     Ok(config)
+}
+
+async fn load_runtime_config(
+    config_override: Option<PathBuf>,
+) -> Result<(AppConfig, PathBuf, PathBuf), Box<dyn std::error::Error + Send + Sync>> {
+    let (config_path, project_root) = resolve_config_path(config_override)?;
+    let config_path_str = config_path
+        .to_str()
+        .ok_or_else(|| format!("invalid utf-8 config path: {}", config_path.display()))?;
+
+    let mut config = load_config(config_path_str).await?;
+    config.exchange_info_output = resolve_project_path(&project_root, &config.exchange_info_output)
+        .to_string_lossy()
+        .into_owned();
+    config.market_data_output_dir =
+        resolve_project_path(&project_root, &config.market_data_output_dir)
+            .to_string_lossy()
+            .into_owned();
+
+    Ok((config, config_path, project_root))
+}
+
+fn parse_config_arg() -> Result<Option<PathBuf>, Box<dyn std::error::Error + Send + Sync>> {
+    let mut args = std::env::args_os().skip(1);
+    let mut config_path = None;
+
+    while let Some(arg) = args.next() {
+        if arg == "--config" || arg == "-c" {
+            let value = args
+                .next()
+                .ok_or("missing value for --config/-c argument")?;
+            config_path = Some(PathBuf::from(value));
+            continue;
+        }
+
+        if let Some(value) = arg
+            .to_str()
+            .and_then(|value| value.strip_prefix("--config="))
+        {
+            config_path = Some(PathBuf::from(value));
+            continue;
+        }
+    }
+
+    Ok(config_path)
+}
+
+fn resolve_config_path(
+    config_override: Option<PathBuf>,
+) -> Result<(PathBuf, PathBuf), Box<dyn std::error::Error + Send + Sync>> {
+    if let Some(config_path) = config_override {
+        let config_path = if config_path.is_absolute() {
+            config_path
+        } else {
+            std::env::current_dir()?.join(config_path)
+        };
+
+        if !config_path.is_file() {
+            return Err(format!("config file not found: {}", config_path.display()).into());
+        }
+
+        let project_root = config_path
+            .parent()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| {
+                config_path
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| PathBuf::from("."))
+            });
+
+        return Ok((config_path, project_root));
+    }
+
+    let mut search_roots = Vec::new();
+    search_roots.push(std::env::current_dir()?);
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            search_roots.push(parent.to_path_buf());
+        }
+    }
+
+    for root in search_roots {
+        for ancestor in root.ancestors() {
+            let candidate = ancestor.join("miraelis").join("config.json");
+            if candidate.is_file() {
+                return Ok((candidate, ancestor.to_path_buf()));
+            }
+
+            let candidate = ancestor.join("config.json");
+            if candidate.is_file() && ancestor.file_name().is_some_and(|name| name == "miraelis") {
+                let project_root = ancestor
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| ancestor.to_path_buf());
+                return Ok((candidate, project_root));
+            }
+        }
+    }
+
+    Err("unable to locate miraelis/config.json from current directory or executable path".into())
+}
+
+fn resolve_project_path(project_root: &Path, value: &str) -> PathBuf {
+    let path = Path::new(value);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        project_root.join(path)
+    }
 }
 
 fn init_logging() {

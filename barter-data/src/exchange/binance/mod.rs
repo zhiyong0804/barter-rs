@@ -8,17 +8,13 @@ use crate::{
     instrument::InstrumentData,
     subscriber::{WebSocketSubscriber, validator::WebSocketSubValidator},
     subscription::{
-        Map,
-        book::OrderBooksL1,
-        candle_1h::Candles1h,
-        candle_1m::Candles1m,
-        trade::PublicTrades,
+        Map, book::OrderBooksL1, candle_1h::Candles1h, candle_1m::Candles1m, trade::PublicTrades,
     },
     transformer::stateless::StatelessTransformer,
 };
 use barter_instrument::exchange::ExchangeId;
 use barter_integration::protocol::websocket::{WebSocketSerdeParser, WsMessage};
-use std::{fmt::Debug, marker::PhantomData};
+use std::{fmt::Debug, marker::PhantomData, time::Duration};
 use url::Url;
 
 /// OrderBook types common to both [`BinanceSpot`](spot::BinanceSpot) and
@@ -109,6 +105,10 @@ where
     fn expected_responses<InstrumentKey>(_: &Map<InstrumentKey>) -> usize {
         1
     }
+
+    fn subscription_timeout() -> Duration {
+        Duration::from_secs(30)
+    }
 }
 
 impl<Instrument, Server> StreamSelector<Instrument, PublicTrades> for Binance<Server>
@@ -138,8 +138,9 @@ where
     Server: ExchangeServer + Debug + Send + Sync,
 {
     type SnapFetcher = NoInitialSnapshots;
-    type Stream =
-        BinanceWsStream<StatelessTransformer<Self, Instrument::Key, Candles1m, candle::BinanceCandle1m>>;
+    type Stream = BinanceWsStream<
+        StatelessTransformer<Self, Instrument::Key, Candles1m, candle::BinanceCandle1m>,
+    >;
 }
 
 impl<Instrument, Server> StreamSelector<Instrument, Candles1h> for Binance<Server>
@@ -148,8 +149,9 @@ where
     Server: ExchangeServer + Debug + Send + Sync,
 {
     type SnapFetcher = NoInitialSnapshots;
-    type Stream =
-        BinanceWsStream<StatelessTransformer<Self, Instrument::Key, Candles1h, candle::BinanceCandle1h>>;
+    type Stream = BinanceWsStream<
+        StatelessTransformer<Self, Instrument::Key, Candles1h, candle::BinanceCandle1h>,
+    >;
 }
 
 impl<'de, Server> serde::Deserialize<'de> for Binance<Server>
