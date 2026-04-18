@@ -1,0 +1,20 @@
+[package]
+name = "miraelis-market-ingest"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+barter-data = { workspace = true }
+barter-instrument = { workspace = true }
+barter-integration = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "fs"] }
+futures-util = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+reqwest = { workspace = true }
+crossbeam-channel = "0.5"

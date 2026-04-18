@@ -20,6 +20,12 @@ pub mod book;
 /// Candle [`SubscriptionKind`] and the associated Barter output data model.
 pub mod candle;
 
+/// 1-minute Candle [`SubscriptionKind`] and the associated Barter output data model.
+pub mod candle_1m;
+
+/// 1-hour Candle [`SubscriptionKind`] and the associated Barter output data model.
+pub mod candle_1h;
+
 /// Liquidation [`SubscriptionKind`] and the associated Barter output data model.
 pub mod liquidation;
 

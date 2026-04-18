@@ -7,7 +7,13 @@ use crate::{
     exchange::{Connector, ExchangeServer, ExchangeSub, StreamSelector},
     instrument::InstrumentData,
     subscriber::{WebSocketSubscriber, validator::WebSocketSubValidator},
-    subscription::{Map, book::OrderBooksL1, trade::PublicTrades},
+    subscription::{
+        Map,
+        book::OrderBooksL1,
+        candle_1h::Candles1h,
+        candle_1m::Candles1m,
+        trade::PublicTrades,
+    },
     transformer::stateless::StatelessTransformer,
 };
 use barter_instrument::exchange::ExchangeId;
@@ -22,6 +28,9 @@ pub mod book;
 /// Defines the type that translates a Barter [`Subscription`](crate::subscription::Subscription)
 /// into an exchange [`Connector`] specific channel used for generating [`Connector::requests`].
 pub mod channel;
+
+/// Binance kline/candle types.
+pub mod candle;
 
 /// [`ExchangeServer`] and [`StreamSelector`] implementations for
 /// [`BinanceFuturesUsd`](futures::BinanceFuturesUsd).
@@ -121,6 +130,26 @@ where
     type Stream = BinanceWsStream<
         StatelessTransformer<Self, Instrument::Key, OrderBooksL1, BinanceOrderBookL1>,
     >;
+}
+
+impl<Instrument, Server> StreamSelector<Instrument, Candles1m> for Binance<Server>
+where
+    Instrument: InstrumentData,
+    Server: ExchangeServer + Debug + Send + Sync,
+{
+    type SnapFetcher = NoInitialSnapshots;
+    type Stream =
+        BinanceWsStream<StatelessTransformer<Self, Instrument::Key, Candles1m, candle::BinanceCandle1m>>;
+}
+
+impl<Instrument, Server> StreamSelector<Instrument, Candles1h> for Binance<Server>
+where
+    Instrument: InstrumentData,
+    Server: ExchangeServer + Debug + Send + Sync,
+{
+    type SnapFetcher = NoInitialSnapshots;
+    type Stream =
+        BinanceWsStream<StatelessTransformer<Self, Instrument::Key, Candles1h, candle::BinanceCandle1h>>;
 }
 
 impl<'de, Server> serde::Deserialize<'de> for Binance<Server>

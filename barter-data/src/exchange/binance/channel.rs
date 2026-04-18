@@ -4,6 +4,8 @@ use crate::{
     subscription::{
         Subscription,
         book::{OrderBooksL1, OrderBooksL2},
+        candle_1h::Candles1h,
+        candle_1m::Candles1m,
         liquidation::Liquidations,
         mark_price::MarkPrices,
         trade::PublicTrades,
@@ -52,6 +54,16 @@ impl BinanceChannel {
     ///
     /// See docs: <https://binance-docs.github.io/apidocs/futures/en/#mark-price-stream>
     pub const MARK_PRICE: Self = Self("@markPrice");
+
+    /// [`Binance`] 1-minute kline channel name.
+    ///
+    /// See docs: <https://binance-docs.github.io/apidocs/futures/en/#kline-candlestick-streams>
+    pub const KLINE_1M: Self = Self("@kline_1m");
+
+    /// [`Binance`] 1-hour kline channel name.
+    ///
+    /// See docs: <https://binance-docs.github.io/apidocs/futures/en/#kline-candlestick-streams>
+    pub const KLINE_1H: Self = Self("@kline_1h");
 }
 
 impl<Server, Instrument> Identifier<BinanceChannel>
@@ -75,6 +87,22 @@ impl<Server, Instrument> Identifier<BinanceChannel>
 {
     fn id(&self) -> BinanceChannel {
         BinanceChannel::ORDER_BOOK_L2
+    }
+}
+
+impl<Server, Instrument> Identifier<BinanceChannel>
+    for Subscription<Binance<Server>, Instrument, Candles1m>
+{
+    fn id(&self) -> BinanceChannel {
+        BinanceChannel::KLINE_1M
+    }
+}
+
+impl<Server, Instrument> Identifier<BinanceChannel>
+    for Subscription<Binance<Server>, Instrument, Candles1h>
+{
+    fn id(&self) -> BinanceChannel {
+        BinanceChannel::KLINE_1H
     }
 }
 

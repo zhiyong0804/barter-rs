@@ -12,6 +12,10 @@ path = "risk/main.rs"
 name = "binance-futures-strategy"
 path = "strategy/main.rs"
 
+[[bin]]
+name = "miraelis"
+path = "miraelis/main.rs"
+
 [workspace]
 resolver = "3"
 members = [
@@ -20,7 +24,8 @@ members = [
     "barter-execution",
     "barter-integration",
     "barter-macro", 
-    "barter-instrument"
+    "barter-instrument",
+    "miraelis"
 ]
 
 [workspace.dependencies]
