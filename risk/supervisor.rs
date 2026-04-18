@@ -152,7 +152,7 @@ impl PositionSupervisor {
         if total_margin_usage_ratio >= self.config.risk.max_position_to_funds_ratio {
             if let Some(last_order) = risk_state.latest_order.as_ref() {
                 if let Some(exposure) = exposures_by_symbol.get(&last_order.symbol) {
-                    if let Some(decision) = evaluate_close_recent_order_decision(
+                    if let Some(decision) = evaluate_reverse_recent_order_decision(
                         &self.config,
                         &account,
                         exposure,
@@ -160,7 +160,7 @@ impl PositionSupervisor {
                         total_margin_usage_ratio,
                         total_estimated_margin_used,
                     ) {
-                        let cooldown_key = "GLOBAL:CLOSE_RECENT".to_owned();
+                        let cooldown_key = "GLOBAL:REVERSE_RECENT".to_owned();
                         if !cooldown_active(
                             cooldowns,
                             &cooldown_key,
@@ -179,7 +179,7 @@ impl PositionSupervisor {
                 total_wallet_balance = %account.total_wallet_balance,
                 total_margin_usage_ratio = %total_margin_usage_ratio,
                 max_position_to_funds_ratio = %self.config.risk.max_position_to_funds_ratio,
-                "Total margin-usage ratio exceeded threshold but no closable latest order found"
+                "Total margin-usage ratio exceeded threshold but no reverse-hedgeable latest order found"
             );
         }
 
@@ -456,7 +456,7 @@ fn evaluate_hedge_decision(
     })
 }
 
-fn evaluate_close_recent_order_decision(
+fn evaluate_reverse_recent_order_decision(
     config: &AppConfig,
     account: &FuturesAccountInformation,
     exposure: &SymbolExposure,
@@ -476,12 +476,21 @@ fn evaluate_close_recent_order_decision(
             total_margin_usage_ratio = %total_margin_usage_ratio,
             last_order_status = %last_order.order_status,
             last_exec_type = %last_order.execution_type,
-            "Exposure above threshold but last order quantity is zero, skipping close-recent rule"
+            "Exposure above threshold but last order quantity is zero, skipping reverse-recent rule"
         );
         return None;
     }
 
-    let quantity = recent_qty.min(exposure.net_qty.abs());
+    let mut quantity = recent_qty;
+    if let Some(max_hedge_notional_usdt) = config.hedge.max_hedge_notional_usdt {
+        if exposure.market_reference > Decimal::ZERO {
+            let max_qty = max_hedge_notional_usdt / exposure.market_reference;
+            if quantity > max_qty {
+                quantity = max_qty;
+            }
+        }
+    }
+
     if quantity <= Decimal::ZERO {
         return None;
     }
@@ -495,13 +504,13 @@ fn evaluate_close_recent_order_decision(
             }
         }
         PositionMode::Hedge => match last_order.position_side {
-            BinancePositionSide::Long => (Side::Sell, Some(BinancePositionSide::Long)),
-            BinancePositionSide::Short => (Side::Buy, Some(BinancePositionSide::Short)),
+            BinancePositionSide::Long => (Side::Sell, Some(BinancePositionSide::Short)),
+            BinancePositionSide::Short => (Side::Buy, Some(BinancePositionSide::Long)),
             BinancePositionSide::Both => {
                 if exposure.net_qty > Decimal::ZERO {
-                    (Side::Sell, Some(BinancePositionSide::Long))
+                    (Side::Sell, Some(BinancePositionSide::Short))
                 } else {
-                    (Side::Buy, Some(BinancePositionSide::Short))
+                    (Side::Buy, Some(BinancePositionSide::Long))
                 }
             }
         },
@@ -515,7 +524,7 @@ fn evaluate_close_recent_order_decision(
         total_margin_usage_ratio = %total_margin_usage_ratio,
         max_position_to_funds_ratio = %config.risk.max_position_to_funds_ratio,
         total_estimated_margin_used = %total_estimated_margin_used,
-        "Close-recent-order rule triggered"
+        "Reverse-recent-order hedge rule triggered"
     );
 
     Some(HedgeDecision {
@@ -524,7 +533,7 @@ fn evaluate_close_recent_order_decision(
         position_side,
         quantity,
         reason: format!(
-            "close_recent_order: total_margin_usage_ratio={} >= {}, wallet_balance={}, total_estimated_margin_used={}, symbol_margin_exposure={}, recent_order_side={:?}, recent_order_position_side={}, recent_order_status={}, recent_order_exec_type={}, recent_order_qty={}, recent_order_filled_qty={}, recent_order_client_id={}",
+            "reverse_recent_order: total_margin_usage_ratio={} >= {}, wallet_balance={}, total_estimated_margin_used={}, symbol_margin_exposure={}, recent_order_side={:?}, recent_order_position_side={}, recent_order_status={}, recent_order_exec_type={}, recent_order_qty={}, recent_order_filled_qty={}, recent_order_client_id={}",
             total_margin_usage_ratio,
             config.risk.max_position_to_funds_ratio,
             account.total_wallet_balance,

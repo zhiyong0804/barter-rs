@@ -359,8 +359,8 @@ async fn monitor_and_exit_locally(
     notify_chat_id: i64,
     symbol: String,
     entry_side: CommandSide,
-    close_side: CommandSide,
-    close_position_side: PositionSide,
+    exit_side: CommandSide,
+    exit_position_side: PositionSide,
     tp_price: Decimal,
     sl_price: Decimal,
     poll_interval_ms: u64,
@@ -398,7 +398,7 @@ async fn monitor_and_exit_locally(
         let close_qty = positions
             .iter()
             .filter_map(|position| {
-                let same_side = match close_position_side {
+                let same_side = match exit_position_side {
                     PositionSide::Long => position.position_side == "LONG",
                     PositionSide::Short => position.position_side == "SHORT",
                 };
@@ -444,11 +444,32 @@ async fn monitor_and_exit_locally(
             ts
         );
 
+        let order_position_side = if trigger == "stop_loss" {
+            match exit_position_side {
+                PositionSide::Long => PositionSide::Short,
+                PositionSide::Short => PositionSide::Long,
+            }
+        } else {
+            exit_position_side
+        };
+
+        if trigger == "stop_loss" {
+            info!(
+                symbol = %symbol,
+                trigger_price = %price,
+                qty = %close_qty,
+                side = ?exit_side,
+                from_position_side = %match exit_position_side { PositionSide::Long => "LONG", PositionSide::Short => "SHORT" },
+                to_position_side = %match order_position_side { PositionSide::Long => "LONG", PositionSide::Short => "SHORT" },
+                "stop-loss reverse order mapping"
+            );
+        }
+
         binance
             .place_market(
                 &symbol,
-                close_side,
-                close_position_side,
+                exit_side,
+                order_position_side,
                 close_qty,
                 &client_order_id,
             )
@@ -458,28 +479,35 @@ async fn monitor_and_exit_locally(
             symbol = %symbol,
             trigger = trigger,
             trigger_price = %price,
-            close_side = ?close_side,
-            close_position_side = %match close_position_side { PositionSide::Long => "LONG", PositionSide::Short => "SHORT" },
+            exit_side = ?exit_side,
+            order_position_side = %match order_position_side { PositionSide::Long => "LONG", PositionSide::Short => "SHORT" },
             close_qty = %close_qty,
             client_order_id = %client_order_id,
-            "local tp/sl market close submitted"
+            "local tp/sl market exit order submitted"
         );
+
+        let action = if trigger == "take_profit" {
+            "市价平仓"
+        } else {
+            "市价下等量反向单"
+        };
 
         let _ = telegram
             .send_message(
                 notify_chat_id,
                 &format!(
-                    "{} 已触发{}并市价平仓：price={}，qty={}，side={:?}，position_side={}",
+                    "{} 已触发{}并{}：price={}，qty={}，side={:?}，position_side={}",
                     symbol,
                     if trigger == "take_profit" {
                         "止盈"
                     } else {
                         "止损"
                     },
+                    action,
                     price,
                     close_qty,
-                    close_side,
-                    match close_position_side {
+                    exit_side,
+                    match order_position_side {
                         PositionSide::Long => "LONG",
                         PositionSide::Short => "SHORT",
                     }
