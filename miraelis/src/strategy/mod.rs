@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use super::quotation::trade_window::{
     BestBidAskItem, QuotationKline, QuotationTicker, TradeItem, UhfTradeWindow,
 };
+use crate::strategy::frame::OrderResponse;
 
+pub mod frame;
 pub mod huge_momentum;
 
 // ---------------------------------------------------------------------------
@@ -87,6 +89,7 @@ pub trait StrategyModule: Send + Sync {
     fn handle_candle_1m(&mut self, _ctx: &mut StrategyContext, _candle: &QuotationKline) {}
     fn handle_best_bid_ask(&mut self, _ctx: &mut StrategyContext, _bba: &BestBidAskItem) {}
     fn handle_ticker(&mut self, _ctx: &mut StrategyContext, _ticker: &QuotationTicker) {}
+    fn handle_order_response(&mut self, _ctx: &mut StrategyContext, _response: &OrderResponse) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -190,6 +193,14 @@ impl StrategyEngine {
                 MarketEvent::BestBidAsk(bba) => m.handle_best_bid_ask(&mut self.ctx, bba),
                 MarketEvent::Ticker(tk) => m.handle_ticker(&mut self.ctx, tk),
             }
+        }
+        self.modules = modules;
+    }
+
+    pub fn dispatch_order_response(&mut self, response: OrderResponse) {
+        let mut modules = std::mem::take(&mut self.modules);
+        for module in &mut modules {
+            module.handle_order_response(&mut self.ctx, &response);
         }
         self.modules = modules;
     }

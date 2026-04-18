@@ -16,11 +16,13 @@ use std::{collections::HashMap, path::PathBuf};
 use tokio::{
     fs,
     io::{AsyncSeekExt, AsyncWriteExt},
+    sync::mpsc::UnboundedReceiver,
     time::{sleep, Duration},
 };
 use tracing::{info, warn};
 
 use crate::signal::{SignalType, TelegramNotifier};
+use crate::strategy::frame::OrderResponse;
 use crate::strategy::{MarketEvent, StrategyEngine};
 
 pub mod trade_window;
@@ -210,6 +212,7 @@ pub async fn run_market_streams(
     subscribe_all: bool,
     engine: &mut StrategyEngine,
     telegram_notifier: Option<&TelegramNotifier>,
+    mut order_response_rx: Option<&mut UnboundedReceiver<OrderResponse>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     fs::create_dir_all(output_dir).await?;
     let (writer, writer_task) = AsyncRollbackWriter::start(2048);
@@ -300,23 +303,56 @@ pub async fn run_market_streams(
         .select_all()
         .with_error_handler(|error| warn!(?error, "market stream generated error"));
 
-    while let Some(event) = merged.next().await {
-        match event {
-            reconnect::Event::Reconnecting(exchange) => {
-                warn!(exchange = %exchange, "market stream reconnecting");
-                if let Some(notifier) = telegram_notifier {
-                    let text = format!("market stream reconnecting: {}", exchange);
-                    if let Err(error) = notifier
-                        .send_for_signal_type(SignalType::SystemStatus, &text)
-                        .await
-                    {
-                        warn!(?error, "failed to send telegram reconnect notification");
+    if let Some(rx) = order_response_rx.as_mut() {
+        loop {
+            tokio::select! {
+                maybe_market = merged.next() => {
+                    let Some(event) = maybe_market else { break; };
+                    match event {
+                        reconnect::Event::Reconnecting(exchange) => {
+                            warn!(exchange = %exchange, "market stream reconnecting");
+                            if let Some(notifier) = telegram_notifier {
+                                let text = format!("market stream reconnecting: {}", exchange);
+                                if let Err(error) = notifier
+                                    .send_for_signal_type(SignalType::SystemStatus, &text)
+                                    .await
+                                {
+                                    warn!(?error, "failed to send telegram reconnect notification");
+                                }
+                            }
+                        }
+                        reconnect::Event::Item(event) => {
+                            apply_event_to_strategy_context(engine, &event);
+                            persist_event(output_dir, event, &engine.ctx.trades, &writer).await?;
+                        }
+                    }
+                }
+                maybe_order_resp = rx.recv() => {
+                    if let Some(order_resp) = maybe_order_resp {
+                        engine.dispatch_order_response(order_resp);
                     }
                 }
             }
-            reconnect::Event::Item(event) => {
-                apply_event_to_strategy_context(engine, &event);
-                persist_event(output_dir, event, &engine.ctx.trades, &writer).await?;
+        }
+    } else {
+        while let Some(event) = merged.next().await {
+            match event {
+                reconnect::Event::Reconnecting(exchange) => {
+                    warn!(exchange = %exchange, "market stream reconnecting");
+                    if let Some(notifier) = telegram_notifier {
+                        let text = format!("market stream reconnecting: {}", exchange);
+                        if let Err(error) = notifier
+                            .send_for_signal_type(SignalType::SystemStatus, &text)
+                            .await
+                        {
+                            warn!(?error, "failed to send telegram reconnect notification");
+                        }
+                    }
+                }
+                reconnect::Event::Item(event) => {
+                    apply_event_to_strategy_context(engine, &event);
+                    persist_event(output_dir, event, &engine.ctx.trades, &writer).await?;
+                }
             }
         }
     }

@@ -1,3 +1,4 @@
+use barter::logging::init_logging_with_prefix;
 use barter_integration::{
     error::SocketError,
     protocol::http::{
@@ -17,12 +18,16 @@ use thiserror::Error;
 use tokio::fs;
 use tracing::{error, info, warn};
 
+mod execution;
 mod quotation;
 mod signal;
 mod strategy;
+use execution::{start_execution_tasks, ExecutionConfig};
 use signal::{SignalType, SignalTypeChatIds, TelegramNotifier};
+use std::collections::HashMap;
+use strategy::frame::{FrameModuleConfig, FrameSignalModule};
 use strategy::huge_momentum::{HugeMomentumModuleConfig, HugeMomentumSignalModule};
-use strategy::StrategyEngine;
+use strategy::{StrategyEngine, SymbolExchangeInfo};
 
 #[derive(Debug, Clone, Deserialize)]
 struct AppConfig {
@@ -44,6 +49,10 @@ struct AppConfig {
     telegram_signal_chat_ids: SignalTypeChatIds,
     #[serde(default)]
     huge_momentum_cfg: HugeMomentumModuleConfig,
+    #[serde(default)]
+    frame_cfg: FrameModuleConfig,
+    #[serde(default)]
+    execution_cfg: ExecutionConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -61,6 +70,24 @@ struct FuturesSymbol {
     quote_asset: String,
     #[serde(rename = "contractType")]
     contract_type: String,
+    #[serde(rename = "pricePrecision", default)]
+    price_precision: u32,
+    #[serde(rename = "quantityPrecision", default)]
+    quantity_precision: u32,
+    #[serde(default)]
+    filters: Vec<FuturesSymbolFilter>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct FuturesSymbolFilter {
+    #[serde(rename = "filterType")]
+    filter_type: String,
+    #[serde(rename = "tickSize")]
+    tick_size: Option<String>,
+    #[serde(rename = "stepSize")]
+    step_size: Option<String>,
+    #[serde(rename = "minQty")]
+    min_qty: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -137,11 +164,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     });
 
     let mut engine = StrategyEngine::new();
+
+    engine.ctx.exchange_info = build_strategy_exchange_info_map(&exchange_info);
+    let execution_symbol_rules = build_execution_symbol_rules(&exchange_info);
+
+    let (order_tx, order_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (order_response_tx, mut order_response_rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let frame_module = if config.execution_cfg.enabled {
+        FrameSignalModule::with_config(config.frame_cfg.clone()).with_order_tx(order_tx)
+    } else {
+        FrameSignalModule::with_config(config.frame_cfg.clone())
+    };
+
+    engine.register(Box::new(frame_module));
     engine.register(Box::new(HugeMomentumSignalModule::with_config(
         config.huge_momentum_cfg.clone(),
     )));
     engine.init_all()?;
     engine.start_all()?;
+
+    if config.execution_cfg.enabled {
+        start_execution_tasks(
+            config.execution_cfg.clone(),
+            config.binance_rest_base_url.clone(),
+            order_rx,
+            order_response_tx,
+            execution_symbol_rules,
+            telegram_notifier.clone(),
+        )
+        .await?;
+    }
 
     if let Some(notifier) = &telegram_notifier {
         if let Err(error) = notifier
@@ -164,6 +217,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         config.subscribe_all,
         &mut engine,
         telegram_notifier.as_ref(),
+        if config.execution_cfg.enabled {
+            Some(&mut order_response_rx)
+        } else {
+            None
+        },
     )
     .await?;
     Ok(())
@@ -430,4 +488,92 @@ fn init_logging() {
         .with_ansi(cfg!(debug_assertions))
         .json()
         .init();
+}
+
+fn build_strategy_exchange_info_map(
+    exchange_info: &FuturesExchangeInfo,
+) -> HashMap<String, SymbolExchangeInfo> {
+    let mut map = HashMap::new();
+    for symbol in &exchange_info.symbols {
+        let tick_size = symbol
+            .filters
+            .iter()
+            .find(|f| f.filter_type == "PRICE_FILTER")
+            .and_then(|f| f.tick_size.as_deref())
+            .and_then(parse_filter_float)
+            .unwrap_or(0.01);
+
+        let step_size = symbol
+            .filters
+            .iter()
+            .find(|f| f.filter_type == "MARKET_LOT_SIZE")
+            .or_else(|| symbol.filters.iter().find(|f| f.filter_type == "LOT_SIZE"))
+            .and_then(|f| f.step_size.as_deref())
+            .and_then(parse_filter_float)
+            .unwrap_or(1.0);
+
+        map.insert(
+            symbol.symbol.to_ascii_lowercase(),
+            SymbolExchangeInfo {
+                symbol: symbol.symbol.clone(),
+                price_precision: symbol.price_precision,
+                qty_precision: symbol.quantity_precision,
+                tick_size,
+                step_size,
+            },
+        );
+    }
+    map
+}
+
+fn build_execution_symbol_rules(
+    exchange_info: &FuturesExchangeInfo,
+) -> HashMap<String, execution::SymbolTradingRule> {
+    let mut map = HashMap::new();
+    for symbol in &exchange_info.symbols {
+        let tick_size = symbol
+            .filters
+            .iter()
+            .find(|f| f.filter_type == "PRICE_FILTER")
+            .and_then(|f| f.tick_size.as_deref())
+            .and_then(parse_filter_float)
+            .unwrap_or(0.01);
+
+        let qty_filter = symbol
+            .filters
+            .iter()
+            .find(|f| f.filter_type == "MARKET_LOT_SIZE")
+            .or_else(|| symbol.filters.iter().find(|f| f.filter_type == "LOT_SIZE"));
+
+        let step_size = qty_filter
+            .and_then(|f| f.step_size.as_deref())
+            .and_then(parse_filter_float)
+            .unwrap_or(1.0);
+
+        let min_qty = qty_filter
+            .and_then(|f| f.min_qty.as_deref())
+            .and_then(parse_filter_float)
+            .unwrap_or(0.0);
+
+        map.insert(
+            symbol.symbol.to_ascii_lowercase(),
+            execution::SymbolTradingRule {
+                price_precision: symbol.price_precision as i32,
+                qty_precision: symbol.quantity_precision as i32,
+                tick_size,
+                step_size,
+                min_qty,
+            },
+        );
+    }
+    map
+}
+
+fn parse_filter_float(raw: &str) -> Option<f64> {
+    let value = raw.parse::<f64>().ok()?;
+    if value.is_finite() {
+        Some(value)
+    } else {
+        None
+    }
 }

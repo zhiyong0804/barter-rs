@@ -12,7 +12,7 @@
     "system_status": "",
     "huge_momentum": "-4963386432",
     "pullback": "",
-    "order_notify": ""
+    "order_notify": "-5195454640"
   },
   "huge_momentum_cfg": {
     "tf_24h_qty_value_threshold": 10000000,
@@ -23,6 +23,37 @@
     "confirm_score_threshold": 2.2,
     "pending_valid_seconds": 900,
     "cooldown_seconds": 2700
+  },
+  "frame_cfg": {
+    "symbols": [
+      "*"
+    ],
+    "excluded_symbols": [
+      "solusdt",
+      "degousdt",
+      "riverusdt",
+      "uaiusdt"
+    ],
+    "order_direction": "short",
+    "signal_qty_times": 2.0,
+    "signal_price_percent": 0.045,
+    "take_profit_percent": 5,
+    "reversal_price_percent": 0.008,
+    "order_base_qty": 60,
+    "keep_position_seconds": 600,
+    "stop_price_percent": 0.01,
+    "shadow_price_percent": 0.33,
+    "shadow_qty_times": 0.5,
+    "tf_24h_qty_value_threshold": 60000000.0
+  },
+  "execution_cfg": {
+    "enabled": false,
+    "api_key_env": "BINANCE_API_KEY",
+    "api_secret_env": "BINANCE_API_SECRET",
+    "ws_trade_url": "wss://ws-fapi.binance.com/ws-fapi/v1",
+    "ws_user_data_base_url": "wss://fstream.binance.com/ws",
+    "recv_window_ms": 5000,
+    "listen_key_keepalive_secs": 1800
   },
   "subscribe_all": true,
   "except": [

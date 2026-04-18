@@ -8,7 +8,7 @@ publish = false
 barter-data = { workspace = true }
 barter-instrument = { workspace = true }
 barter-integration = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "fs"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "fs", "sync"] }
 futures-util = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -18,3 +18,7 @@ chrono = { workspace = true }
 thiserror = { workspace = true }
 reqwest = { workspace = true }
 crossbeam-channel = "0.5"
+tokio-tungstenite = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
