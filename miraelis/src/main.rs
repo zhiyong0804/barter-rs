@@ -34,6 +34,8 @@ struct AppConfig {
     binance_rest_base_url: String,
     exchange_info_output: String,
     market_data_output_dir: String,
+    #[serde(default = "default_market_data_shard_bytes")]
+    market_data_shard_bytes: u64,
     exchange_info_sync_interval_secs: u64,
     #[serde(default)]
     subscribe_all: bool,
@@ -53,6 +55,11 @@ struct AppConfig {
     frame_cfg: FrameModuleConfig,
     #[serde(default)]
     execution_cfg: ExecutionConfig,
+}
+
+fn default_market_data_shard_bytes() -> u64 {
+    // 默认单个分片最大 200 MiB
+    200 * 1024 * 1024
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -215,6 +222,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         &config.market_data_output_dir,
         symbol_specs,
         config.subscribe_all,
+        config.market_data_shard_bytes,
         &mut engine,
         telegram_notifier.as_ref(),
         if config.execution_cfg.enabled {

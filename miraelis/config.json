@@ -2,6 +2,7 @@
   "binance_rest_base_url": "https://fapi.binance.com",
   "exchange_info_output": "miraelis/data/binance_futures_exchange_info.json",
   "market_data_output_dir": "miraelis/data/market",
+  "market_data_shard_bytes": 209715200,
   "exchange_info_sync_interval_secs": 86400,
   "telegram_bot_token": "",
   "telegram_chat_id": "",
@@ -44,7 +45,14 @@
     "stop_price_percent": 0.01,
     "shadow_price_percent": 0.33,
     "shadow_qty_times": 0.5,
-    "tf_24h_qty_value_threshold": 60000000.0
+    "tf_24h_qty_value_threshold": 60000000.0,
+    "spike_burst_window_seconds": 6,
+    "spike_burst_threshold": 50,
+    "spike_burst_max_positions": 5,
+    "spike_burst_margin_usdt": 5.0,
+    "spike_burst_half_close_percent": 0.002,
+    "spike_burst_full_close_percent": 0.003,
+    "spike_detect_lower_wick_percent": 0.003
   },
   "execution_cfg": {
     "enabled": false,

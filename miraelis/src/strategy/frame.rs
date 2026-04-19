@@ -244,6 +244,51 @@ pub struct FrameModuleConfig {
     pub shadow_qty_times: f64,
     #[serde(default = "default_order_base_qty")]
     pub order_base_qty: f64,
+
+    // ------ spike burst (集体下插针做空) ------
+    /// 检测窗口秒数，默认 6s
+    #[serde(default = "default_spike_burst_window_seconds")]
+    pub spike_burst_window_seconds: u64,
+    /// 触发阈值：窗口内检测到超过该数量的 symbol 下插针后，后续 symbol 才触发做空
+    #[serde(default = "default_spike_burst_threshold")]
+    pub spike_burst_threshold: usize,
+    /// 最多允许同时持有的 spike burst 空头仓位数量
+    #[serde(default = "default_spike_burst_max_positions")]
+    pub spike_burst_max_positions: usize,
+    /// 每笔 spike burst 仓位的保证金（USDT）
+    #[serde(default = "default_spike_burst_margin_usdt")]
+    pub spike_burst_margin_usdt: f64,
+    /// 减半平仓的盈利百分比（如 0.002 = 0.2% = 20bp），支持直接填 20 会被归一化
+    #[serde(default = "default_spike_burst_half_close_percent")]
+    pub spike_burst_half_close_percent: f64,
+    /// 全平仓的盈利百分比（如 0.003 = 0.3% = 30bp）
+    #[serde(default = "default_spike_burst_full_close_percent")]
+    pub spike_burst_full_close_percent: f64,
+    /// 检测下影线的阈值：(close - low) / close > 该值则认为存在下插针，支持直接填 0.3（%）
+    #[serde(default = "default_spike_detect_lower_wick_percent")]
+    pub spike_detect_lower_wick_percent: f64,
+}
+
+fn default_spike_burst_window_seconds() -> u64 {
+    6
+}
+fn default_spike_burst_threshold() -> usize {
+    50
+}
+fn default_spike_burst_max_positions() -> usize {
+    5
+}
+fn default_spike_burst_margin_usdt() -> f64 {
+    5.0
+}
+fn default_spike_burst_half_close_percent() -> f64 {
+    0.002
+}
+fn default_spike_burst_full_close_percent() -> f64 {
+    0.003
+}
+fn default_spike_detect_lower_wick_percent() -> f64 {
+    0.003
 }
 
 fn default_order_direction() -> String {
@@ -296,8 +341,28 @@ impl Default for FrameModuleConfig {
             shadow_price_percent: default_shadow_price_percent(),
             shadow_qty_times: default_shadow_qty_times(),
             order_base_qty: default_order_base_qty(),
+            spike_burst_window_seconds: default_spike_burst_window_seconds(),
+            spike_burst_threshold: default_spike_burst_threshold(),
+            spike_burst_max_positions: default_spike_burst_max_positions(),
+            spike_burst_margin_usdt: default_spike_burst_margin_usdt(),
+            spike_burst_half_close_percent: default_spike_burst_half_close_percent(),
+            spike_burst_full_close_percent: default_spike_burst_full_close_percent(),
+            spike_detect_lower_wick_percent: default_spike_detect_lower_wick_percent(),
         }
     }
+}
+
+/// 由 spike-burst 逻辑开出的单笔空头仓位跟踪状态
+#[derive(Debug, Clone)]
+pub struct SpikeBurstPosition {
+    pub symbol: String,
+    pub entry_price: f64,
+    /// 当前剩余仓位量
+    pub qty: f64,
+    /// 已触发减半平仓
+    pub half_closed: bool,
+    pub open_event_time_ms: u64,
+    pub client_order_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -331,6 +396,12 @@ pub struct FrameSignalModule {
     pub cfg: FrameSignalContext,
     order_tx: Option<UnboundedSender<OrderRequest>>,
     order_seq: AtomicU64,
+    /// symbol(lower) → 最近一次检测到下插针的事件时间(ms)
+    spike_burst_symbol_times: HashMap<String, u64>,
+    /// symbol(lower) → 当前存活的 spike-burst 空头仓位
+    spike_burst_positions: HashMap<String, SpikeBurstPosition>,
+    /// 已开出的 spike-burst 仓位总数（未全平前持续计数）
+    spike_burst_opened_count: usize,
 }
 
 impl Default for FrameSignalModule {
@@ -339,6 +410,9 @@ impl Default for FrameSignalModule {
             cfg: FrameSignalContext::default(),
             order_tx: None,
             order_seq: AtomicU64::new(1),
+            spike_burst_symbol_times: HashMap::new(),
+            spike_burst_positions: HashMap::new(),
+            spike_burst_opened_count: 0,
         }
     }
 }
@@ -366,6 +440,9 @@ impl FrameSignalModule {
             cfg: ctx,
             order_tx: None,
             order_seq: AtomicU64::new(1),
+            spike_burst_symbol_times: HashMap::new(),
+            spike_burst_positions: HashMap::new(),
+            spike_burst_opened_count: 0,
         }
     }
 
@@ -949,6 +1026,231 @@ impl FrameSignalModule {
         }
     }
 
+    /// 每根 TradeItem 进来时，检测「集体下插针做空」特性：
+    /// - 统计 window 内有下影线的 symbol 数量
+    /// - 超过阈值后，后续 symbol 做空（最多 max_positions 笔）
+    /// - 持仓中按 half_close / full_close 百分比分批平仓
+    fn check_spike_burst(&mut self, sctx: &mut StrategyContext, trade: &TradeItem) {
+        if self.cfg.config.spike_burst_max_positions == 0
+            || self.cfg.config.spike_burst_threshold == 0
+        {
+            return;
+        }
+
+        let symbol = trade.symbol.to_ascii_lowercase();
+        let now_ms = trade.event_time;
+        let config = self.cfg.config.clone();
+        let window_ms = config.spike_burst_window_seconds * 1_000;
+        let half_close_frac = normalize_percent(config.spike_burst_half_close_percent);
+        let full_close_frac = normalize_percent(config.spike_burst_full_close_percent);
+        let wick_pct_threshold = normalize_percent(config.spike_detect_lower_wick_percent);
+
+        // -- 1. 提取当前 symbol 的 二秒线，判断是否有下影线
+        let (has_down_wick, qty_precision, price_precision, tick_size) = {
+            let Some(tw) = sctx.trades.get(&symbol) else {
+                return;
+            };
+            let Some(curr) = Self::get_recent_second(tw, 0) else {
+                return;
+            };
+            let wick = Self::is_valid_second(curr)
+                && curr.close > 0.0
+                && curr.open > 0.0
+                // close 和 open 都明显高于 low，且 close 最终为反弹收盘（下影线特征）
+                && (curr.close - curr.low) / curr.close > wick_pct_threshold
+                && (curr.open - curr.low) / curr.open > wick_pct_threshold
+                && curr.close >= curr.low
+                && curr.high >= curr.close;
+
+            let (qp, pp, ts) = if let Some(ei) = sctx.exchange_info.get(&symbol) {
+                (
+                    ei.qty_precision as i32,
+                    ei.price_precision as i32,
+                    ei.tick_size,
+                )
+            } else {
+                (3, 2, 0.01)
+            };
+
+            (wick, qp, pp, ts)
+        };
+
+        // -- 2. 清理过期条目
+        self.spike_burst_symbol_times
+            .retain(|_, t| now_ms.saturating_sub(*t) < window_ms);
+
+        // -- 3. 记录当前 symbol 的下影线
+        if has_down_wick {
+            self.spike_burst_symbol_times.insert(symbol.clone(), now_ms);
+        }
+
+        let burst_count = self.spike_burst_symbol_times.len();
+
+        // -- 4. 若超过阈值且未达到最大仓位，对当前 symbol 发起做空
+        if has_down_wick
+            && burst_count > config.spike_burst_threshold
+            && self.spike_burst_opened_count < config.spike_burst_max_positions
+            && !self.spike_burst_positions.contains_key(&symbol)
+            && self.symbol_enabled(&symbol)
+        {
+            let entry_price = align_to_tick_size(trade.price, tick_size, price_precision);
+            if entry_price <= 0.0 {
+                return;
+            }
+            let qty =
+                round_to_n_decimal(config.spike_burst_margin_usdt / entry_price, qty_precision);
+            if qty <= 0.0 {
+                tracing::warn!(
+                    symbol = %trade.symbol,
+                    "spike_burst: qty <= 0, skipping"
+                );
+                return;
+            }
+
+            let strategy_id = self.cfg.id;
+            let seq = self.order_seq.fetch_add(1, Ordering::Relaxed);
+            let cid = format!("sb_{}", seq);
+
+            let req = OrderRequest {
+                client_order_id: cid.clone(),
+                symbol: trade.symbol.clone(),
+                side: PositionSide::Short,
+                order_type: FrameOrderType::Market,
+                price: entry_price,
+                stop_price: 0.0,
+                qty,
+                reduce_only: false,
+                close_position: false,
+                good_till_date: now_ms + 601_000,
+                strategy_id,
+                origin_client_order_id: None,
+            };
+            Self::submit_order(self.order_tx.as_ref(), req);
+
+            self.spike_burst_positions.insert(
+                symbol.clone(),
+                SpikeBurstPosition {
+                    symbol: trade.symbol.clone(),
+                    entry_price,
+                    qty,
+                    half_closed: false,
+                    open_event_time_ms: now_ms,
+                    client_order_id: cid,
+                },
+            );
+            self.spike_burst_opened_count += 1;
+
+            tracing::info!(
+                strategy = self.cfg.name.as_str(),
+                strategy_id,
+                symbol = %trade.symbol,
+                burst_symbol_count = burst_count,
+                entry_price,
+                qty,
+                margin_usdt = config.spike_burst_margin_usdt,
+                half_close_pct = half_close_frac,
+                full_close_pct = full_close_frac,
+                "spike_burst short triggered"
+            );
+        }
+
+        // -- 5. 管理已有 spike-burst 空头仓位的盈利平仓
+        let pos_entry;
+        let pos_half_closed;
+        let pos_qty;
+        let pos_cid;
+        if let Some(pos) = self.spike_burst_positions.get(&symbol) {
+            pos_entry = pos.entry_price;
+            pos_half_closed = pos.half_closed;
+            pos_qty = pos.qty;
+            pos_cid = pos.client_order_id.clone();
+        } else {
+            return;
+        }
+
+        if pos_entry <= 0.0 || pos_qty <= 0.0 {
+            return;
+        }
+        // SHORT 盈利 = (entry - current) / entry
+        let profit_frac = (pos_entry - trade.price) / pos_entry;
+        let strategy_id = self.cfg.id;
+
+        if profit_frac >= full_close_frac {
+            // 全平剩余仓位
+            let seq = self.order_seq.fetch_add(1, Ordering::Relaxed);
+            let cid_close = format!("sbtp_full_{}", seq);
+            let price = align_to_tick_size(trade.price * 0.999, tick_size, price_precision);
+            let req = OrderRequest {
+                client_order_id: cid_close.clone(),
+                symbol: trade.symbol.clone(),
+                side: PositionSide::Long,
+                order_type: FrameOrderType::Market,
+                price,
+                stop_price: 0.0,
+                qty: pos_qty,
+                reduce_only: true,
+                close_position: false,
+                good_till_date: now_ms + 601_000,
+                strategy_id,
+                origin_client_order_id: Some(pos_cid),
+            };
+            Self::submit_order(self.order_tx.as_ref(), req);
+
+            tracing::info!(
+                strategy = self.cfg.name.as_str(),
+                strategy_id,
+                symbol = %trade.symbol,
+                profit_pct = profit_frac * 100.0,
+                qty = pos_qty,
+                "spike_burst full close (30bp)"
+            );
+
+            self.spike_burst_positions.remove(&symbol);
+            if self.spike_burst_opened_count > 0 {
+                self.spike_burst_opened_count -= 1;
+            }
+        } else if !pos_half_closed && profit_frac >= half_close_frac {
+            // 减半平仓
+            let half_qty = round_to_n_decimal(pos_qty / 2.0, qty_precision).max(0.0);
+            if half_qty <= 0.0 {
+                return;
+            }
+            let seq = self.order_seq.fetch_add(1, Ordering::Relaxed);
+            let cid_half = format!("sbtp_half_{}", seq);
+            let price = align_to_tick_size(trade.price * 0.999, tick_size, price_precision);
+            let req = OrderRequest {
+                client_order_id: cid_half.clone(),
+                symbol: trade.symbol.clone(),
+                side: PositionSide::Long,
+                order_type: FrameOrderType::Market,
+                price,
+                stop_price: 0.0,
+                qty: half_qty,
+                reduce_only: true,
+                close_position: false,
+                good_till_date: now_ms + 601_000,
+                strategy_id,
+                origin_client_order_id: Some(pos_cid),
+            };
+            Self::submit_order(self.order_tx.as_ref(), req);
+
+            tracing::info!(
+                strategy = self.cfg.name.as_str(),
+                strategy_id,
+                symbol = %trade.symbol,
+                profit_pct = profit_frac * 100.0,
+                half_qty,
+                remaining = pos_qty - half_qty,
+                "spike_burst half close (20bp)"
+            );
+
+            if let Some(pos) = self.spike_burst_positions.get_mut(&symbol) {
+                pos.half_closed = true;
+                pos.qty -= half_qty;
+            }
+        }
+    }
+
     fn check_and_emit(&mut self, sctx: &mut StrategyContext, trade: &TradeItem) {
         let strategy_id = self.cfg.id;
         let strategy_name = self.cfg.name.clone();
@@ -1242,6 +1544,7 @@ impl StrategyModule for FrameSignalModule {
         if !self.cfg.started {
             return;
         }
+        self.check_spike_burst(ctx, trade);
         self.check_and_emit(ctx, trade);
     }
 

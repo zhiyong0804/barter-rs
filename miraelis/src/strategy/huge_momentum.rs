@@ -486,7 +486,7 @@ impl StrategyModule for HugeMomentumSignalModule {
         Ok(())
     }
 
-    fn handle_candle_1m(&mut self, ctx: &mut StrategyContext, _candle: &QuotationKline) {
+    fn handle_candle_1m(&mut self, ctx: &mut StrategyContext, candle: &QuotationKline) {
         if !self.cfg.started {
             return;
         }
@@ -497,11 +497,11 @@ impl StrategyModule for HugeMomentumSignalModule {
         }
         self.last_check_second = now;
 
-        let Some(tw) = ctx.trades.get(&_candle.symbol) else {
+        let Some(tw) = ctx.trades.get(&candle.symbol) else {
             return;
         };
 
-        if let Some(signal) = self.check(&_candle.symbol, tw, now) {
+        if let Some(signal) = self.check(&candle.symbol, tw, now) {
             tracing::info!(
                 strategy = self.name(),
                 strategy_id = self.id(),
@@ -510,5 +510,120 @@ impl StrategyModule for HugeMomentumSignalModule {
                 "huge momentum signal triggered"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::quotation::trade_window::UhfKlineInterval;
+    use serde::Deserialize;
+    use std::{fs, path::PathBuf};
+
+    #[derive(Debug, Clone, Deserialize)]
+    struct KlineFixture {
+        start_timestamp: u64,
+        open: f64,
+        close: f64,
+        high: f64,
+        low: f64,
+        volume: f64,
+        bid_volume: f64,
+    }
+
+    fn load_fixture_rows(file_name: &str) -> Vec<KlineFixture> {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let candidate_paths = [
+            manifest_dir.join("tests").join("data").join(file_name),
+            manifest_dir
+                .join("miraelis")
+                .join("tests")
+                .join("data")
+                .join(file_name),
+        ];
+
+        let path = candidate_paths
+            .iter()
+            .find(|candidate| candidate.exists())
+            .expect("failed to find fixture file");
+        let raw = fs::read_to_string(path).expect("failed to read fixture file");
+        serde_json::from_str(&raw).expect("failed to parse fixture json")
+    }
+
+    fn build_kline(symbol: &str, interval: UhfKlineInterval, row: &KlineFixture) -> QuotationKline {
+        let interval_ms = match interval {
+            UhfKlineInterval::M1 => 60_000,
+            UhfKlineInterval::H1 => 3_600_000,
+        };
+
+        QuotationKline {
+            symbol: symbol.to_owned(),
+            event_time: row.start_timestamp + interval_ms - 1,
+            start_timestamp: row.start_timestamp,
+            end_timestamp: row.start_timestamp + interval_ms - 1,
+            interval,
+            start_trade_id: 0,
+            end_trade_id: 0,
+            open: row.open,
+            close: row.close,
+            high: row.high,
+            low: row.low,
+            volume: row.volume,
+            bid_volume: row.bid_volume,
+            is_final: true,
+        }
+    }
+
+    #[test]
+    fn check_replay_from_1m_and_1h_files() {
+        let symbol = "BTCUSDT";
+
+        let mut module = HugeMomentumSignalModule::with_config(HugeMomentumModuleConfig {
+            tf_24h_qty_value_threshold: 1_000.0,
+            price_15m_change_threshold: 0.002,
+            qty_15m_times_threshold: 6.0,
+            qty_5m_total_multiple: 1.0,
+            required_minutes: 60,
+            confirm_score_threshold: 2.2,
+            pending_valid_seconds: 15 * 60,
+            cooldown_seconds: 45 * 60,
+        });
+
+        let rows_1h = load_fixture_rows("huge_momentum_1h.json");
+        let rows_1m = load_fixture_rows("huge_momentum_1m.json");
+
+        let first_1m_second = rows_1m
+            .first()
+            .expect("1m fixture should not be empty")
+            .start_timestamp
+            / 1000;
+        module.cfg.started = true;
+        module.cfg.started_timestamp = first_1m_second.saturating_sub(3_600);
+
+        let mut trade_window = UhfTradeWindow::new(symbol);
+        for row in &rows_1h {
+            trade_window.update_kline(build_kline(symbol, UhfKlineInterval::H1, row));
+        }
+        trade_window.hours_window.tf_total_qty = rows_1h.iter().map(|item| item.volume).sum();
+        trade_window.hours_window.tf_total_value =
+            rows_1h.iter().map(|item| item.close * item.volume).sum();
+
+        let mut check_calls = 0usize;
+        let mut signal_hits = 0usize;
+        for row in &rows_1m {
+            trade_window.update_kline(build_kline(symbol, UhfKlineInterval::M1, row));
+
+            let current = row.start_timestamp / 1000 + 60;
+            check_calls += 1;
+            if module.check(symbol, &trade_window, current).is_some() {
+                signal_hits += 1;
+            }
+        }
+
+        assert_eq!(check_calls, rows_1m.len());
+        assert!(
+            signal_hits > 0,
+            "expected at least one huge momentum signal"
+        );
     }
 }

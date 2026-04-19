@@ -37,7 +37,43 @@ pub struct SymbolSpec {
     pub quote: String,
 }
 
+/// 每一个逻辑文件路径（如 `{dir}/trades.jsonl`）对应的分片状态。
+/// 物理路径格式：`{dir}/{stem}_{date}_{idx:04}{ext}`
+struct ShardState {
+    /// 当前物理路径
+    physical_path: String,
+    /// 当前活跃日期字符串 ("YYYY-MM-DD")
+    date_str: String,
+    /// 当前分片序号（从 1 开始）
+    shard_idx: u32,
+    /// 当前分片已写入字节数
+    current_bytes: u64,
+    data_file: fs::File,
+    rollback_file: fs::File,
+}
+
+/// 将逻辑路径 + 日期 + 序号 拼成物理路径。
+/// 例：`/data/trades.jsonl` + `2026-04-19` + 2 => `/data/trades_2026-04-19_0002.jsonl`
+fn make_shard_path(logical: &str, date_str: &str, shard_idx: u32) -> String {
+    let path = PathBuf::from(logical);
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    let ext = path
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    let dir = path
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if dir.is_empty() {
+        format!("{stem}_{date_str}_{shard_idx:04}{ext}")
+    } else {
+        format!("{dir}/{stem}_{date_str}_{shard_idx:04}{ext}")
+    }
+}
+
 struct WriteRequest {
+    /// 逻辑路径，不含日期/序号后缀
     path: String,
     line: Vec<u8>,
 }
@@ -48,11 +84,13 @@ struct AsyncRollbackWriter {
 }
 
 impl AsyncRollbackWriter {
-    fn start(buffer: usize) -> (Self, tokio::task::JoinHandle<()>) {
+    /// `max_shard_bytes`: 单个分片文件的最大字节数，0 表示不限大小（仅按日期分片）。
+    fn start(buffer: usize, max_shard_bytes: u64) -> (Self, tokio::task::JoinHandle<()>) {
         let (tx, rx) = crossbeam_channel::bounded::<WriteRequest>(buffer);
 
         let task = tokio::spawn(async move {
-            let mut files: HashMap<String, (fs::File, fs::File)> = HashMap::new();
+            // key = logical path
+            let mut shards: HashMap<String, ShardState> = HashMap::new();
 
             loop {
                 let req = match rx.try_recv() {
@@ -64,55 +102,12 @@ impl AsyncRollbackWriter {
                     Err(TryRecvError::Disconnected) => break,
                 };
 
-                let opened = if let Some(opened) = files.get_mut(&req.path) {
-                    Some(opened)
-                } else {
-                    match open_rollback_pair(&req.path).await {
-                        Ok(pair) => {
-                            files.insert(req.path.clone(), pair);
-                            files.get_mut(&req.path)
-                        }
-                        Err(error) => {
-                            warn!(path = %req.path, ?error, "open rollback writer failed");
-                            None
-                        }
-                    }
-                };
-
-                let Some((data_file, rollback_file)) = opened else {
-                    continue;
-                };
-
-                if let Err(error) = append_with_rollback(data_file, rollback_file, &req.line).await
-                {
-                    warn!(path = %req.path, ?error, "append with rollback failed");
-                }
+                write_sharded(&req, &mut shards, max_shard_bytes).await;
             }
 
+            // 刷写剩余
             while let Ok(req) = rx.try_recv() {
-                let opened = if let Some(opened) = files.get_mut(&req.path) {
-                    Some(opened)
-                } else {
-                    match open_rollback_pair(&req.path).await {
-                        Ok(pair) => {
-                            files.insert(req.path.clone(), pair);
-                            files.get_mut(&req.path)
-                        }
-                        Err(error) => {
-                            warn!(path = %req.path, ?error, "open rollback writer failed");
-                            None
-                        }
-                    }
-                };
-
-                let Some((data_file, rollback_file)) = opened else {
-                    continue;
-                };
-
-                if let Err(error) = append_with_rollback(data_file, rollback_file, &req.line).await
-                {
-                    warn!(path = %req.path, ?error, "append with rollback failed");
-                }
+                write_sharded(&req, &mut shards, max_shard_bytes).await;
             }
         });
 
@@ -131,6 +126,70 @@ impl AsyncRollbackWriter {
                 line,
             })
             .map_err(|error| format!("async rollback writer channel closed: {error}").into())
+    }
+}
+
+/// 将一条 line 写入正确的分片，自动处理日期轮转和大小分片。
+async fn write_sharded(
+    req: &WriteRequest,
+    shards: &mut HashMap<String, ShardState>,
+    max_shard_bytes: u64,
+) {
+    let today = Utc::now().format("%Y-%m-%d").to_string();
+    let need_new_shard = match shards.get(&req.path) {
+        None => true,
+        Some(s) => {
+            s.date_str != today
+                || (max_shard_bytes > 0 && s.current_bytes >= max_shard_bytes)
+        }
+    };
+
+    if need_new_shard {
+        // 如果日期变了，序号从 1 重新开始；否则递增
+        let (new_date, new_idx) = match shards.get(&req.path) {
+            None => (today.clone(), 1u32),
+            Some(s) if s.date_str != today => (today.clone(), 1u32),
+            Some(s) => (today.clone(), s.shard_idx + 1),
+        };
+        let physical = make_shard_path(&req.path, &new_date, new_idx);
+        match open_rollback_pair(&physical).await {
+            Ok((data_file, rollback_file)) => {
+                let current_bytes = data_file.metadata().await.map(|m| m.len()).unwrap_or(0);
+                info!(
+                    logical = %req.path,
+                    physical = %physical,
+                    shard_idx = new_idx,
+                    "opened new shard file"
+                );
+                shards.insert(
+                    req.path.clone(),
+                    ShardState {
+                        physical_path: physical,
+                        date_str: new_date,
+                        shard_idx: new_idx,
+                        current_bytes,
+                        data_file,
+                        rollback_file,
+                    },
+                );
+            }
+            Err(error) => {
+                warn!(path = %req.path, ?error, "open shard rollback writer failed");
+                return;
+            }
+        }
+    }
+
+    let Some(shard) = shards.get_mut(&req.path) else {
+        return;
+    };
+    match append_with_rollback(&mut shard.data_file, &mut shard.rollback_file, &req.line).await {
+        Ok(()) => {
+            shard.current_bytes += req.line.len() as u64 + 1; // +1 for newline
+        }
+        Err(error) => {
+            warn!(path = %shard.physical_path, ?error, "append with rollback failed");
+        }
     }
 }
 
@@ -210,12 +269,13 @@ pub async fn run_market_streams(
     output_dir: &str,
     symbols: Vec<SymbolSpec>,
     subscribe_all: bool,
+    max_shard_bytes: u64,
     engine: &mut StrategyEngine,
     telegram_notifier: Option<&TelegramNotifier>,
     mut order_response_rx: Option<&mut UnboundedReceiver<OrderResponse>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     fs::create_dir_all(output_dir).await?;
-    let (writer, writer_task) = AsyncRollbackWriter::start(2048);
+    let (writer, writer_task) = AsyncRollbackWriter::start(2048, max_shard_bytes);
 
     let route_count = if subscribe_all { 8 } else { 1 };
     let symbol_groups = split_symbols_into_routes(&symbols, route_count);
