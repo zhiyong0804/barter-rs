@@ -12,7 +12,7 @@ use tokio_tungstenite::{
         protocol::{CloseFrame, frame::Frame},
     },
 };
-use tracing::debug;
+use tracing::{debug, trace};
 
 /// Convenient type alias for a tungstenite `WebSocketStream`.
 pub type WebSocket = tokio_tungstenite::WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -171,13 +171,13 @@ where
 
 /// Basic process for a [`WebSocket`] ping message. Logs the payload at `trace` level.
 pub fn process_ping<ExchangeMessage>(ping: Bytes) -> Option<Result<ExchangeMessage, SocketError>> {
-    debug!(payload = ?ping, "received Ping WebSocket message");
+    trace!(payload = ?ping, "received Ping WebSocket message");
     None
 }
 
 /// Basic process for a [`WebSocket`] pong message. Logs the payload at `trace` level.
 pub fn process_pong<ExchangeMessage>(pong: Bytes) -> Option<Result<ExchangeMessage, SocketError>> {
-    debug!(payload = ?pong, "received Pong WebSocket message");
+    trace!(payload = ?pong, "received Pong WebSocket message");
     None
 }
 
@@ -186,7 +186,7 @@ pub fn process_close_frame<ExchangeMessage>(
     close_frame: Option<CloseFrame>,
 ) -> Option<Result<ExchangeMessage, SocketError>> {
     let close_frame = format!("{close_frame:?}");
-    debug!(payload = %close_frame, "received CloseFrame WebSocket message");
+    trace!(payload = %close_frame, "received CloseFrame WebSocket message");
     Some(Err(SocketError::Terminated(close_frame)))
 }
 
@@ -195,7 +195,7 @@ pub fn process_frame<ExchangeMessage>(
     frame: Frame,
 ) -> Option<Result<ExchangeMessage, SocketError>> {
     let frame = format!("{frame:?}");
-    debug!(payload = %frame, "received unexpected Frame WebSocket message");
+    trace!(payload = %frame, "received unexpected Frame WebSocket message");
     None
 }
 
@@ -238,21 +238,27 @@ mod tests {
     fn test_ws_parser_binary_message() {
         let msg = Ok(WsMessage::Binary(Bytes::from_static(b"\x01\x02")));
         let result = WsParser::parse(msg);
-        assert!(matches!(result, Message::Payload(bytes) if bytes == Bytes::from_static(b"\x01\x02")));
+        assert!(
+            matches!(result, Message::Payload(bytes) if bytes == Bytes::from_static(b"\x01\x02"))
+        );
     }
 
     #[test]
     fn test_ws_parser_ping() {
         let msg = Ok(WsMessage::Ping(Bytes::from_static(b"ping")));
         let result = WsParser::parse(msg);
-        assert!(matches!(result, Message::Admin(AdminWs::Ping(bytes)) if bytes == Bytes::from_static(b"ping")));
+        assert!(
+            matches!(result, Message::Admin(AdminWs::Ping(bytes)) if bytes == Bytes::from_static(b"ping"))
+        );
     }
 
     #[test]
     fn test_ws_parser_pong() {
         let msg = Ok(WsMessage::Pong(Bytes::from_static(b"pong")));
         let result = WsParser::parse(msg);
-        assert!(matches!(result, Message::Admin(AdminWs::Pong(bytes)) if bytes == Bytes::from_static(b"pong")));
+        assert!(
+            matches!(result, Message::Admin(AdminWs::Pong(bytes)) if bytes == Bytes::from_static(b"pong"))
+        );
     }
 
     #[test]
