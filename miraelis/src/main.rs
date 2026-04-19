@@ -12,10 +12,11 @@ use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 use thiserror::Error;
-use tokio::fs;
+use tokio::{fs, sync::Semaphore, time::sleep};
 use tracing::{error, info, warn};
 
 mod execution;
@@ -174,6 +175,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     engine.ctx.exchange_info = build_strategy_exchange_info_map(&exchange_info);
     let execution_symbol_rules = build_execution_symbol_rules(&exchange_info);
+
+    // -- 预热：下载历史 k 线，让策略（如 HugeMomentum）在直播流开始前就有足够数据 --
+    let warmup_symbols: Vec<String> = symbol_specs
+        .iter()
+        .map(|s| s.symbol.to_ascii_uppercase())
+        .collect();
+    warm_up_trade_windows(&config.binance_rest_base_url, &warmup_symbols, &mut engine).await;
 
     let (order_tx, order_rx) = tokio::sync::mpsc::unbounded_channel();
     let (order_response_tx, mut order_response_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -584,4 +592,225 @@ fn parse_filter_float(raw: &str) -> Option<f64> {
     } else {
         None
     }
+}
+
+/// 令牌桶限速器。
+/// Binance Futures REST 上限 2400 weight/min，klines weight=1，
+/// 保守取 35 req/s（留约 12% 余量）。
+struct RateLimiter {
+    interval: Duration,
+    last: tokio::sync::Mutex<tokio::time::Instant>,
+}
+
+impl RateLimiter {
+    fn new(rate_per_sec: u32) -> Arc<Self> {
+        Arc::new(Self {
+            interval: Duration::from_nanos(1_000_000_000 / rate_per_sec.max(1) as u64),
+            last: tokio::sync::Mutex::new(tokio::time::Instant::now()),
+        })
+    }
+
+    async fn acquire(&self) {
+        let mut last = self.last.lock().await;
+        let now = tokio::time::Instant::now();
+        let elapsed = now.duration_since(*last);
+        if elapsed < self.interval {
+            sleep(self.interval - elapsed).await;
+        }
+        *last = tokio::time::Instant::now();
+    }
+}
+
+async fn warm_up_trade_windows(
+    rest_base: &str,
+    symbols: &[String],
+    engine: &mut strategy::StrategyEngine,
+) {
+    use quotation::trade_window::{QuotationKline, UhfKlineInterval, UhfTradeWindow};
+
+    #[derive(Debug)]
+    struct RawKline {
+        open_time: u64,
+        open: f64,
+        high: f64,
+        low: f64,
+        close: f64,
+        volume: f64,
+        close_time: u64,
+    }
+
+    fn parse_klines(json: &serde_json::Value) -> Vec<RawKline> {
+        let Some(arr) = json.as_array() else {
+            return Vec::new();
+        };
+        arr.iter()
+            .filter_map(|row| {
+                let row = row.as_array()?;
+                let open_time = row.first()?.as_u64()?;
+                let open = row.get(1)?.as_str()?.parse::<f64>().ok()?;
+                let high = row.get(2)?.as_str()?.parse::<f64>().ok()?;
+                let low = row.get(3)?.as_str()?.parse::<f64>().ok()?;
+                let close = row.get(4)?.as_str()?.parse::<f64>().ok()?;
+                let volume = row.get(5)?.as_str()?.parse::<f64>().ok()?;
+                let close_time = row.get(6)?.as_u64()?;
+                Some(RawKline {
+                    open_time,
+                    open,
+                    high,
+                    low,
+                    close,
+                    volume,
+                    close_time,
+                })
+            })
+            .collect()
+    }
+
+    // 带退避重试的单次请求：遇到 429/418 读取 Retry-After，其余错误指数退避
+    async fn fetch_klines(
+        client: &reqwest::Client,
+        rl: &RateLimiter,
+        url: &str,
+    ) -> Option<serde_json::Value> {
+        const MAX_RETRIES: u32 = 3;
+        let mut backoff = Duration::from_secs(2);
+        for attempt in 0..=MAX_RETRIES {
+            rl.acquire().await;
+            let resp = match client.get(url).send().await {
+                Ok(r) => r,
+                Err(err) => {
+                    warn!(?err, url, attempt, "warm_up: request error");
+                    sleep(backoff).await;
+                    backoff *= 2;
+                    continue;
+                }
+            };
+            let status = resp.status();
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.as_u16() == 418 {
+                let wait = resp
+                    .headers()
+                    .get("Retry-After")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .map(Duration::from_secs)
+                    .unwrap_or(Duration::from_secs(60));
+                warn!(
+                    url,
+                    secs = wait.as_secs(),
+                    "warm_up: rate limited, sleeping"
+                );
+                sleep(wait).await;
+                backoff = Duration::from_secs(2);
+                continue;
+            }
+            if !status.is_success() {
+                warn!(url, status = status.as_u16(), attempt, "warm_up: non-2xx");
+                if attempt < MAX_RETRIES {
+                    sleep(backoff).await;
+                    backoff *= 2;
+                }
+                continue;
+            }
+            match resp.json::<serde_json::Value>().await {
+                Ok(json) => return Some(json),
+                Err(err) => {
+                    warn!(?err, url, "warm_up: JSON parse error");
+                    return None;
+                }
+            }
+        }
+        None
+    }
+
+    // Binance Futures klines weight=1，保守 35 req/s；最大并发 10
+    let rate_limiter = RateLimiter::new(35);
+    let sem = Arc::new(Semaphore::new(10));
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .unwrap_or_default();
+    let base = rest_base.trim_end_matches('/').to_owned();
+
+    info!(
+        symbols = symbols.len(),
+        rate_per_sec = 35,
+        "warm_up: fetching historical 1h + 1m klines"
+    );
+
+    let mut tasks = Vec::with_capacity(symbols.len());
+    for symbol in symbols {
+        let symbol = symbol.clone();
+        let client = client.clone();
+        let base = base.clone();
+        let rl = rate_limiter.clone();
+        let sem = sem.clone();
+        tasks.push(tokio::spawn(async move {
+            let _permit = sem.acquire().await.ok()?;
+            // 1h k线 — 最近 24 根，初始化 hours_window / tf_total_value
+            let url_1h = format!("{base}/fapi/v1/klines?symbol={symbol}&interval=1h&limit=24");
+            let json_1h = fetch_klines(&client, &rl, &url_1h).await?;
+            let klines_1h = parse_klines(&json_1h);
+            // 1m k线 — 最近 240 根 (4h)，满足 required_minutes=120 + vol_base 余量
+            let url_1m = format!("{base}/fapi/v1/klines?symbol={symbol}&interval=1m&limit=240");
+            let json_1m = fetch_klines(&client, &rl, &url_1m).await?;
+            let klines_1m = parse_klines(&json_1m);
+            Some((symbol, klines_1h, klines_1m))
+        }));
+    }
+
+    let mut loaded = 0usize;
+    let mut failed = 0usize;
+    for task in tasks {
+        let Some(Some((symbol, klines_1h, klines_1m))) = task.await.ok() else {
+            failed += 1;
+            continue;
+        };
+        let sym_lower = symbol.to_ascii_lowercase();
+        let window = engine
+            .ctx
+            .trades
+            .entry(sym_lower.clone())
+            .or_insert_with(|| UhfTradeWindow::new(sym_lower.clone()));
+        for k in &klines_1h {
+            window.update_kline(QuotationKline {
+                symbol: sym_lower.clone(),
+                event_time: k.close_time,
+                start_timestamp: k.open_time,
+                end_timestamp: k.close_time,
+                interval: UhfKlineInterval::H1,
+                start_trade_id: 0,
+                end_trade_id: 0,
+                open: k.open,
+                close: k.close,
+                high: k.high,
+                low: k.low,
+                volume: k.volume,
+                bid_volume: 0.0,
+                is_final: true,
+            });
+        }
+        for k in &klines_1m {
+            window.update_kline(QuotationKline {
+                symbol: sym_lower.clone(),
+                event_time: k.close_time,
+                start_timestamp: k.open_time,
+                end_timestamp: k.close_time,
+                interval: UhfKlineInterval::M1,
+                start_trade_id: 0,
+                end_trade_id: 0,
+                open: k.open,
+                close: k.close,
+                high: k.high,
+                low: k.low,
+                volume: k.volume,
+                bid_volume: 0.0,
+                is_final: true,
+            });
+        }
+        loaded += 1;
+    }
+    info!(
+        loaded,
+        failed, "warm_up: historical klines loaded into trade windows"
+    );
 }
