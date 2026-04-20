@@ -17,7 +17,7 @@ use tokio::{
     fs,
     io::{AsyncSeekExt, AsyncWriteExt},
     sync::mpsc::UnboundedReceiver,
-    time::{sleep, Duration},
+    time::{interval, sleep, Duration},
 };
 use tracing::{info, warn};
 
@@ -270,12 +270,21 @@ pub async fn run_market_streams(
     symbols: Vec<SymbolSpec>,
     subscribe_all: bool,
     max_shard_bytes: u64,
+    debug_trade_window_symbol: Option<&str>,
+    debug_trade_window_interval_secs: u64,
     engine: &mut StrategyEngine,
     telegram_notifier: Option<&TelegramNotifier>,
     mut order_response_rx: Option<&mut UnboundedReceiver<OrderResponse>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     fs::create_dir_all(output_dir).await?;
     let (writer, writer_task) = AsyncRollbackWriter::start(2048, max_shard_bytes);
+    let debug_trade_window_symbol = debug_trade_window_symbol
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty());
+    let mut debug_interval = interval(Duration::from_secs(
+        debug_trade_window_interval_secs.max(60),
+    ));
+    debug_interval.tick().await;
 
     let route_count = if subscribe_all { 8 } else { 1 };
     let symbol_groups = split_symbols_into_routes(&symbols, route_count);
@@ -366,6 +375,9 @@ pub async fn run_market_streams(
     if let Some(rx) = order_response_rx.as_mut() {
         loop {
             tokio::select! {
+                _ = debug_interval.tick() => {
+                    dump_trade_window_debug(engine, debug_trade_window_symbol.as_deref());
+                }
                 maybe_market = merged.next() => {
                     let Some(event) = maybe_market else { break; };
                     match event {
@@ -395,23 +407,31 @@ pub async fn run_market_streams(
             }
         }
     } else {
-        while let Some(event) = merged.next().await {
-            match event {
-                reconnect::Event::Reconnecting(exchange) => {
-                    warn!(exchange = %exchange, "market stream reconnecting");
-                    if let Some(notifier) = telegram_notifier {
-                        let text = format!("market stream reconnecting: {}", exchange);
-                        if let Err(error) = notifier
-                            .send_for_signal_type(SignalType::SystemStatus, &text)
-                            .await
-                        {
-                            warn!(?error, "failed to send telegram reconnect notification");
+        loop {
+            tokio::select! {
+                _ = debug_interval.tick() => {
+                    dump_trade_window_debug(engine, debug_trade_window_symbol.as_deref());
+                }
+                maybe_market = merged.next() => {
+                    let Some(event) = maybe_market else { break; };
+                    match event {
+                        reconnect::Event::Reconnecting(exchange) => {
+                            warn!(exchange = %exchange, "market stream reconnecting");
+                            if let Some(notifier) = telegram_notifier {
+                                let text = format!("market stream reconnecting: {}", exchange);
+                                if let Err(error) = notifier
+                                    .send_for_signal_type(SignalType::SystemStatus, &text)
+                                    .await
+                                {
+                                    warn!(?error, "failed to send telegram reconnect notification");
+                                }
+                            }
+                        }
+                        reconnect::Event::Item(event) => {
+                            apply_event_to_strategy_context(engine, &event);
+                            persist_event(output_dir, event, &engine.ctx.trades, &writer).await?;
                         }
                     }
-                }
-                reconnect::Event::Item(event) => {
-                    apply_event_to_strategy_context(engine, &event);
-                    persist_event(output_dir, event, &engine.ctx.trades, &writer).await?;
                 }
             }
         }
@@ -423,6 +443,30 @@ pub async fn run_market_streams(
     }
 
     Ok(())
+}
+
+fn dump_trade_window_debug(engine: &StrategyEngine, symbol: Option<&str>) {
+    let Some(symbol) = symbol else {
+        return;
+    };
+
+    let Some(window) = engine.ctx.trades.get(symbol) else {
+        info!(symbol, "trade_window debug dump skipped: symbol cache not found");
+        return;
+    };
+
+    match serde_json::to_string_pretty(window) {
+        Ok(payload) => {
+            info!(
+                symbol,
+                payload = %payload,
+                "trade_window hourly debug dump"
+            );
+        }
+        Err(error) => {
+            warn!(symbol, ?error, "trade_window debug dump serialization failed");
+        }
+    }
 }
 
 fn split_symbols_into_routes(symbols: &[SymbolSpec], route_count: usize) -> Vec<Vec<SymbolSpec>> {

@@ -37,6 +37,10 @@ struct AppConfig {
     market_data_output_dir: String,
     #[serde(default = "default_market_data_shard_bytes")]
     market_data_shard_bytes: u64,
+    #[serde(default)]
+    debug_trade_window_symbol: Option<String>,
+    #[serde(default = "default_trade_window_debug_interval_secs")]
+    debug_trade_window_interval_secs: u64,
     exchange_info_sync_interval_secs: u64,
     #[serde(default)]
     subscribe_all: bool,
@@ -61,6 +65,10 @@ struct AppConfig {
 fn default_market_data_shard_bytes() -> u64 {
     // 默认单个分片最大 200 MiB
     200 * 1024 * 1024
+}
+
+fn default_trade_window_debug_interval_secs() -> u64 {
+    60 * 60
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -231,6 +239,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         symbol_specs,
         config.subscribe_all,
         config.market_data_shard_bytes,
+        config.debug_trade_window_symbol.as_deref(),
+        config.debug_trade_window_interval_secs,
         &mut engine,
         telegram_notifier.as_ref(),
         if config.execution_cfg.enabled {

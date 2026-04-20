@@ -3,6 +3,8 @@
   "exchange_info_output": "miraelis/data/binance_futures_exchange_info.json",
   "market_data_output_dir": "miraelis/data/market",
   "market_data_shard_bytes": 209715200,
+  "debug_trade_window_symbol": "sirenusdt",
+  "debug_trade_window_interval_secs": 3600,
   "exchange_info_sync_interval_secs": 86400,
   "telegram_bot_token": "",
   "telegram_chat_id": "",

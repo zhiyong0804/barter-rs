@@ -477,7 +477,8 @@ impl UhfTradeWindow {
                 self.milli_seconds_window.high = new_second.high;
                 self.milli_seconds_window.low = new_second.low;
             } else {
-                self.milli_seconds_window.high = dmax(self.milli_seconds_window.high, new_second.high);
+                self.milli_seconds_window.high =
+                    dmax(self.milli_seconds_window.high, new_second.high);
                 self.milli_seconds_window.low = dmin(self.milli_seconds_window.low, new_second.low);
             }
             self.milli_seconds_window.close = new_second.close;
@@ -495,7 +496,10 @@ impl UhfTradeWindow {
         }
     }
 
-    fn push_single_second(&mut self, value: SingleSecondTradeItems) -> Option<SingleSecondTradeItems> {
+    fn push_single_second(
+        &mut self,
+        value: SingleSecondTradeItems,
+    ) -> Option<SingleSecondTradeItems> {
         self.milli_seconds_window.items.push_back(value);
         let mut removed = None;
         while self.milli_seconds_window.items.len() > TRADE_MILLI_SECONDS_WINDOW_SIZE {

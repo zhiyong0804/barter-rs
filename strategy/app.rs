@@ -6,7 +6,10 @@ use crate::{
 };
 use barter::logging::init_logging_with_prefix;
 use rust_decimal::Decimal;
-use std::time::{Duration, Instant};
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 use tracing::{error, info, warn};
 
 #[derive(Debug, Clone)]
@@ -77,7 +80,19 @@ fn build_execution_plan(
 pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     init_logging_with_prefix("binance-futures-strategy.log");
 
-    let config = load_config("strategy/config.json")?;
+    let config_path = parse_config_path_from_args()?;
+    let config = load_config(
+        config_path
+            .as_deref()
+            .unwrap_or(std::path::Path::new("strategy.json")),
+    )
+    .map_err(|err| {
+        error!(
+            "failed to load config file, config_path:{:#?} with err:{}",
+            config_path, err
+        );
+        err
+    })?;
     let bot_token = config.telegram.bot_token.clone();
 
     let telegram = TelegramClient::new(&bot_token);
@@ -194,6 +209,31 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
         tokio::time::sleep(Duration::from_millis(config.telegram.poll_interval_ms)).await;
     }
+}
+
+fn parse_config_path_from_args() -> Result<Option<PathBuf>, Box<dyn std::error::Error + Send + Sync>>
+{
+    let mut args = std::env::args_os().skip(1);
+    let mut config_path = None;
+
+    while let Some(arg) = args.next() {
+        if arg == "--config" || arg == "-c" {
+            let value = args
+                .next()
+                .ok_or("missing value for --config/-c argument")?;
+            config_path = Some(PathBuf::from(value));
+            continue;
+        }
+
+        if let Some(value) = arg
+            .to_str()
+            .and_then(|value| value.strip_prefix("--config="))
+        {
+            config_path = Some(PathBuf::from(value));
+        }
+    }
+
+    Ok(config_path)
 }
 
 async fn execute_command(

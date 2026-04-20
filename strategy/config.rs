@@ -1,6 +1,10 @@
 use rust_decimal::Decimal;
 use serde::Deserialize;
-use std::{fs::File, io::BufReader, path::Path};
+use std::{
+    fs::File,
+    io::BufReader,
+    path::{Path, PathBuf},
+};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
@@ -58,7 +62,52 @@ fn default_local_exit_poll_interval_ms() -> u64 {
 pub fn load_config(
     path: impl AsRef<Path>,
 ) -> Result<AppConfig, Box<dyn std::error::Error + Send + Sync>> {
-    let file = File::open(path)?;
+    let resolved = resolve_config_path(path.as_ref())?;
+    let file = File::open(&resolved)?;
     let reader = BufReader::new(file);
     Ok(serde_json::from_reader(reader)?)
+}
+
+fn resolve_config_path(path: &Path) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
+    if path.is_absolute() && path.is_file() {
+        return Ok(path.to_path_buf());
+    }
+
+    if path.is_file() {
+        return Ok(path.to_path_buf());
+    }
+
+    let relative = path;
+    let mut candidates = Vec::new();
+
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join(relative));
+        for ancestor in cwd.ancestors() {
+            candidates.push(ancestor.join(relative));
+            if let Some(file_name) = relative.file_name() {
+                candidates.push(ancestor.join(file_name));
+                candidates.push(ancestor.join("bin").join(file_name));
+            }
+        }
+    }
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            candidates.push(parent.join(relative));
+            for ancestor in parent.ancestors() {
+                candidates.push(ancestor.join(relative));
+                if let Some(file_name) = relative.file_name() {
+                    candidates.push(ancestor.join(file_name));
+                    candidates.push(ancestor.join("strategy").join(file_name));
+                    candidates.push(ancestor.join("bin").join(file_name));
+                }
+            }
+        }
+    }
+
+    if let Some(found) = candidates.into_iter().find(|candidate| candidate.is_file()) {
+        return Ok(found);
+    }
+
+    Err(format!("config file not found: {}", path.display()).into())
 }
