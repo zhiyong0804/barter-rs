@@ -239,32 +239,81 @@ impl HugeMomentumSignalModule {
         tw: &UhfTradeWindow,
         current: u64,
     ) -> Option<HugeMomentumSignal> {
-        if current < self.cfg.started_timestamp + 120 {
-            return None;
-        }
+        // if current < self.cfg.started_timestamp + 120 {
+        //     return None;
+        // }
 
         if !Self::precheck_trade_window(tw, self.cfg.required_minutes) {
+            tracing::trace!(
+                strategy = self.name(),
+                strategy_id = self.id(),
+                symbol,
+                current,
+                minutes_len = tw.minutes_window.items.len(),
+                required_minutes = self.cfg.required_minutes,
+                "huge momentum check precheck_trade_window failed"
+            );
             return None;
         }
 
         let Some(recent_minutes) = Self::collect_recent_minutes(tw, current) else {
+            tracing::trace!(
+                strategy = self.name(),
+                strategy_id = self.id(),
+                symbol,
+                current,
+                minutes_len = tw.minutes_window.items.len(),
+                "huge momentum check collect_recent_minutes failed"
+            );
             return None;
         };
         if recent_minutes.len() < 3 {
+            tracing::trace!(
+                strategy = self.name(),
+                strategy_id = self.id(),
+                symbol,
+                current,
+                recent_minutes_len = recent_minutes.len(),
+                "huge momentum check not enough recent minutes"
+            );
             return None;
         }
 
         let latest_minute = *recent_minutes.last().expect("checked len");
         let recent_5m = Self::build_recent_5m(&recent_minutes);
         if recent_5m.len() < 3 {
+            tracing::trace!(
+                strategy = self.name(),
+                strategy_id = self.id(),
+                symbol,
+                current,
+                recent_5m_len = recent_5m.len(),
+                "huge momentum check not enough recent 5m bars"
+            );
             return None;
         }
 
         let vol_base_range_end = 120_usize.min(tw.minutes_window.items.len().saturating_sub(1));
         if vol_base_range_end < 15 {
+            tracing::trace!(
+                strategy = self.name(),
+                strategy_id = self.id(),
+                symbol,
+                current,
+                minutes_len = tw.minutes_window.items.len(),
+                "huge momentum check not enough minutes for vol_base"
+            );
             return None;
         }
         let Some(vol_base) = Self::compute_vol_base(tw, current, 15, vol_base_range_end) else {
+            tracing::trace!(
+                strategy = self.name(),
+                strategy_id = self.id(),
+                symbol,
+                current,
+                minutes_len = tw.minutes_window.items.len(),
+                "huge momentum check compute_vol_base failed"
+            );
             return None;
         };
 
@@ -517,8 +566,19 @@ impl StrategyModule for HugeMomentumSignalModule {
 mod tests {
     use super::*;
     use crate::quotation::trade_window::UhfKlineInterval;
+    use chrono::{DateTime, Utc};
     use serde::Deserialize;
     use std::{fs, path::PathBuf};
+
+    fn init_test_tracing() -> tracing::subscriber::DefaultGuard {
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_target(true)
+            .with_thread_ids(true)
+            .with_thread_names(true)
+            .finish();
+        tracing::subscriber::set_default(subscriber)
+    }
 
     #[derive(Debug, Clone, Deserialize)]
     struct KlineFixture {
@@ -529,6 +589,24 @@ mod tests {
         low: f64,
         volume: f64,
         bid_volume: f64,
+    }
+
+    #[derive(Debug, Clone, Deserialize)]
+    struct PersistedKlineData {
+        close: f64,
+        close_time: DateTime<Utc>,
+        high: f64,
+        low: f64,
+        open: f64,
+        volume: f64,
+        #[serde(default)]
+        bid_volume: f64,
+    }
+
+    #[derive(Debug, Clone, Deserialize)]
+    struct PersistedKlineEvent {
+        instrument: String,
+        data: PersistedKlineData,
     }
 
     fn load_fixture_rows(file_name: &str) -> Vec<KlineFixture> {
@@ -547,7 +625,46 @@ mod tests {
             .find(|candidate| candidate.exists())
             .expect("failed to find fixture file");
         let raw = fs::read_to_string(path).expect("failed to read fixture file");
-        serde_json::from_str(&raw).expect("failed to parse fixture json")
+
+        if let Ok(rows) = serde_json::from_str::<Vec<KlineFixture>>(&raw) {
+            return rows;
+        }
+
+        if let Ok(events) = serde_json::from_str::<Vec<PersistedKlineEvent>>(&raw) {
+            return events
+                .into_iter()
+                .map(convert_persisted_event)
+                .collect::<Vec<_>>();
+        }
+
+        raw.lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                serde_json::from_str::<PersistedKlineEvent>(line)
+                    .map(convert_persisted_event)
+                    .expect("failed to parse persisted kline line")
+            })
+            .collect::<Vec<_>>()
+    }
+
+    fn convert_persisted_event(event: PersistedKlineEvent) -> KlineFixture {
+        let interval_ms = if event.instrument.ends_with("|kline_1h") {
+            3_600_000
+        } else {
+            60_000
+        };
+        let close_ms = event.data.close_time.timestamp_millis().max(0) as u64;
+        let start_timestamp = close_ms.saturating_sub(interval_ms - 1);
+
+        KlineFixture {
+            start_timestamp,
+            open: event.data.open,
+            close: event.data.close,
+            high: event.data.high,
+            low: event.data.low,
+            volume: event.data.volume,
+            bid_volume: event.data.bid_volume,
+        }
     }
 
     fn build_kline(symbol: &str, interval: UhfKlineInterval, row: &KlineFixture) -> QuotationKline {
@@ -576,7 +693,9 @@ mod tests {
 
     #[test]
     fn check_replay_from_1m_and_1h_files() {
-        let symbol = "BTCUSDT";
+        let _tracing_guard = init_test_tracing();
+
+        let symbol = "BASEDUSDT";
 
         let mut module = HugeMomentumSignalModule::with_config(HugeMomentumModuleConfig {
             tf_24h_qty_value_threshold: 1_000.0,
@@ -589,8 +708,8 @@ mod tests {
             cooldown_seconds: 45 * 60,
         });
 
-        let rows_1h = load_fixture_rows("huge_momentum_1h.json");
-        let rows_1m = load_fixture_rows("huge_momentum_1m.json");
+        let rows_1h = load_fixture_rows("basedusdt_1h.candle");
+        let rows_1m = load_fixture_rows("basedusdt_1m.candle");
 
         let first_1m_second = rows_1m
             .first()

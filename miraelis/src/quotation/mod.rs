@@ -12,7 +12,10 @@ use barter_instrument::instrument::market_data::kind::MarketDataInstrumentKind;
 use chrono::Utc;
 use crossbeam_channel::{self, TryRecvError};
 use futures_util::StreamExt;
-use std::{collections::HashMap, path::PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 use tokio::{
     fs,
     io::{AsyncSeekExt, AsyncWriteExt},
@@ -70,6 +73,63 @@ fn make_shard_path(logical: &str, date_str: &str, shard_idx: u32) -> String {
     } else {
         format!("{dir}/{stem}_{date_str}_{shard_idx:04}{ext}")
     }
+}
+
+/// 为当天已有分片选择恢复写入的物理路径。
+/// - 若当天不存在分片：返回 `_0001`
+/// - 若当天最新分片未达到大小上限：继续写该分片
+/// - 若当天最新分片已达到大小上限：创建下一个分片
+fn select_resume_shard_path(logical: &str, date_str: &str, max_shard_bytes: u64) -> (String, u32) {
+    let logical_path = PathBuf::from(logical);
+    let stem = logical_path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    let ext = logical_path
+        .extension()
+        .map(|value| format!(".{}", value.to_string_lossy()))
+        .unwrap_or_default();
+    let prefix = format!("{stem}_{date_str}_");
+
+    let search_dir = logical_path.parent().unwrap_or_else(|| Path::new("."));
+    let mut latest_idx = 0u32;
+    let mut latest_path = None::<String>;
+
+    if let Ok(entries) = std::fs::read_dir(search_dir) {
+        for entry in entries.flatten() {
+            let file_name = entry.file_name();
+            let file_name = file_name.to_string_lossy();
+
+            if !file_name.starts_with(&prefix) || !file_name.ends_with(&ext) {
+                continue;
+            }
+
+            let idx_part = &file_name[prefix.len()..file_name.len().saturating_sub(ext.len())];
+            let Ok(idx) = idx_part.parse::<u32>() else {
+                continue;
+            };
+
+            if idx > latest_idx {
+                latest_idx = idx;
+                latest_path = Some(entry.path().to_string_lossy().into_owned());
+            }
+        }
+    }
+
+    if let Some(existing_path) = latest_path {
+        let current_size = std::fs::metadata(&existing_path)
+            .map(|meta| meta.len())
+            .unwrap_or(0);
+        if max_shard_bytes == 0 || current_size < max_shard_bytes {
+            return (existing_path, latest_idx);
+        }
+
+        let next_idx = latest_idx.saturating_add(1).max(1);
+        return (make_shard_path(logical, date_str, next_idx), next_idx);
+    }
+
+    (make_shard_path(logical, date_str, 1), 1)
 }
 
 struct WriteRequest {
@@ -139,19 +199,27 @@ async fn write_sharded(
     let need_new_shard = match shards.get(&req.path) {
         None => true,
         Some(s) => {
-            s.date_str != today
-                || (max_shard_bytes > 0 && s.current_bytes >= max_shard_bytes)
+            s.date_str != today || (max_shard_bytes > 0 && s.current_bytes >= max_shard_bytes)
         }
     };
 
     if need_new_shard {
-        // 如果日期变了，序号从 1 重新开始；否则递增
-        let (new_date, new_idx) = match shards.get(&req.path) {
-            None => (today.clone(), 1u32),
-            Some(s) if s.date_str != today => (today.clone(), 1u32),
-            Some(s) => (today.clone(), s.shard_idx + 1),
+        // 启动后的首次写入要恢复到当天最新分片，而不是总是回到 `_0001`。
+        let (physical, new_date, new_idx) = match shards.get(&req.path) {
+            None => {
+                let (physical, idx) = select_resume_shard_path(&req.path, &today, max_shard_bytes);
+                (physical, today.clone(), idx)
+            }
+            Some(s) if s.date_str != today => {
+                let physical = make_shard_path(&req.path, &today, 1u32);
+                (physical, today.clone(), 1u32)
+            }
+            Some(s) => {
+                let idx = s.shard_idx + 1;
+                let physical = make_shard_path(&req.path, &today, idx);
+                (physical, today.clone(), idx)
+            }
         };
-        let physical = make_shard_path(&req.path, &new_date, new_idx);
         match open_rollback_pair(&physical).await {
             Ok((data_file, rollback_file)) => {
                 let current_bytes = data_file.metadata().await.map(|m| m.len()).unwrap_or(0);
@@ -395,7 +463,7 @@ pub async fn run_market_streams(
                         }
                         reconnect::Event::Item(event) => {
                             apply_event_to_strategy_context(engine, &event);
-                            persist_event(output_dir, event, &engine.ctx.trades, &writer).await?;
+                            persist_event(output_dir, event, &writer).await?;
                         }
                     }
                 }
@@ -429,7 +497,7 @@ pub async fn run_market_streams(
                         }
                         reconnect::Event::Item(event) => {
                             apply_event_to_strategy_context(engine, &event);
-                            persist_event(output_dir, event, &engine.ctx.trades, &writer).await?;
+                            persist_event(output_dir, event, &writer).await?;
                         }
                     }
                 }
@@ -451,7 +519,10 @@ fn dump_trade_window_debug(engine: &StrategyEngine, symbol: Option<&str>) {
     };
 
     let Some(window) = engine.ctx.trades.get(symbol) else {
-        info!(symbol, "trade_window debug dump skipped: symbol cache not found");
+        info!(
+            symbol,
+            "trade_window debug dump skipped: symbol cache not found"
+        );
         return;
     };
 
@@ -464,7 +535,11 @@ fn dump_trade_window_debug(engine: &StrategyEngine, symbol: Option<&str>) {
             );
         }
         Err(error) => {
-            warn!(symbol, ?error, "trade_window debug dump serialization failed");
+            warn!(
+                symbol,
+                ?error,
+                "trade_window debug dump serialization failed"
+            );
         }
     }
 }
@@ -487,12 +562,10 @@ fn split_symbols_into_routes(symbols: &[SymbolSpec], route_count: usize) -> Vec<
 async fn persist_event(
     output_dir: &str,
     event: barter_data::event::MarketEvent<String, DataKind>,
-    windows: &HashMap<String, UhfTradeWindow>,
     writer: &AsyncRollbackWriter,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let now = Utc::now().to_rfc3339();
     let symbol = extract_symbol(&event.instrument);
-    let window = windows.get(symbol.as_str());
 
     match event.kind {
         DataKind::Trade(trade) => {
@@ -503,15 +576,6 @@ async fn persist_event(
                 "exchange": event.exchange,
                 "kind": "trade",
                 "data": trade,
-                "window": window.map(|value| serde_json::json!({
-                    "current_second_qty": value.get_current_second_qty(),
-                    "second_avg_qty": value.get_second_avg_qty(),
-                    "current_open": value.get_current_open_price(),
-                    "current_high": value.get_current_high_price(),
-                    "current_low": value.get_current_low_price(),
-                    "best_bid": value.get_best_bid_price(),
-                    "best_ask": value.get_best_ask_price(),
-                })),
             });
             writer.append_json_line(&format!("{output_dir}/trades.jsonl"), &payload)?;
         }
@@ -522,7 +586,6 @@ async fn persist_event(
                 event.exchange,
                 candle,
                 &now,
-                window,
                 writer,
             )
             .await?;
@@ -539,7 +602,6 @@ async fn persist_candle(
     exchange: barter_instrument::exchange::ExchangeId,
     candle: Candle,
     now: &str,
-    window: Option<&UhfTradeWindow>,
     writer: &AsyncRollbackWriter,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (kind, file_name) = if instrument.ends_with("|kline_1m") {
@@ -557,11 +619,6 @@ async fn persist_candle(
         "exchange": exchange,
         "kind": kind,
         "data": candle,
-        "window": window.map(|value| serde_json::json!({
-            "latest_60m_qty": value.get_latest_60_minutes_qty(),
-            "hour": value.get_hour_price_qty(),
-            "h24": value.get_24hour_price_qty(),
-        })),
     });
     writer.append_json_line(&format!("{output_dir}/{file_name}"), &payload)?;
     Ok(())

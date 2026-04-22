@@ -6,7 +6,7 @@
   "debug_trade_window_symbol": "sirenusdt",
   "debug_trade_window_interval_secs": 3600,
   "exchange_info_sync_interval_secs": 86400,
-  "telegram_bot_token": "",
+  "telegram_bot_token": "8267744473:AAF0pAqTI0DyJcE9NrWJGdPPpWBaSimON4k",
   "telegram_chat_id": "",
   "telegram_signal_chat_ids": {
     "momentum": "-4759467705",
