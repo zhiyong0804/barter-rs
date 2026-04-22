@@ -780,11 +780,27 @@ async fn warm_up_trade_windows(
 
     let (writer, writer_task) = AsyncRollbackWriter::start(2048, 0);
 
+    let total_symbols = tasks.len();
+    let mut processed = 0usize;
     let mut loaded = 0usize;
     let mut failed = 0usize;
     for task in tasks {
         let Some(Some((symbol, klines_1h, klines_1m))) = task.await.ok() else {
+            processed += 1;
             failed += 1;
+            let progress_pct = if total_symbols == 0 {
+                100.0
+            } else {
+                (processed as f64 / total_symbols as f64) * 100.0
+            };
+            info!(
+                processed,
+                total = total_symbols,
+                progress_pct,
+                loaded,
+                failed,
+                "warm_up: progress"
+            );
             continue;
         };
         let klines_1h_count = klines_1h.len();
@@ -889,7 +905,21 @@ async fn warm_up_trade_windows(
             "warm_up: symbol loaded"
         );
 
+        processed += 1;
         loaded += 1;
+        let progress_pct = if total_symbols == 0 {
+            100.0
+        } else {
+            (processed as f64 / total_symbols as f64) * 100.0
+        };
+        info!(
+            processed,
+            total = total_symbols,
+            progress_pct,
+            loaded,
+            failed,
+            "warm_up: progress"
+        );
     }
 
     drop(writer);
