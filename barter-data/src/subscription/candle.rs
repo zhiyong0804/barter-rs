@@ -32,5 +32,8 @@ pub struct Candle {
     pub low: f64,
     pub close: f64,
     pub volume: f64,
+    pub bid_volume: f64,
+    pub bid_quote_asset_volume: f64,
     pub trade_count: u64,
+    pub is_final: bool,
 }

@@ -139,13 +139,13 @@ struct WriteRequest {
 }
 
 #[derive(Clone)]
-struct AsyncRollbackWriter {
+pub struct AsyncRollbackWriter {
     tx: crossbeam_channel::Sender<WriteRequest>,
 }
 
 impl AsyncRollbackWriter {
     /// `max_shard_bytes`: 单个分片文件的最大字节数，0 表示不限大小（仅按日期分片）。
-    fn start(buffer: usize, max_shard_bytes: u64) -> (Self, tokio::task::JoinHandle<()>) {
+    pub fn start(buffer: usize, max_shard_bytes: u64) -> (Self, tokio::task::JoinHandle<()>) {
         let (tx, rx) = crossbeam_channel::bounded::<WriteRequest>(buffer);
 
         let task = tokio::spawn(async move {
@@ -580,15 +580,17 @@ async fn persist_event(
             writer.append_json_line(&format!("{output_dir}/trades.jsonl"), &payload)?;
         }
         DataKind::Candle(candle) => {
-            persist_candle(
-                output_dir,
-                &event.instrument,
-                event.exchange,
-                candle,
-                &now,
-                writer,
-            )
-            .await?;
+            if candle.is_final {
+                persist_candle(
+                    output_dir,
+                    &event.instrument,
+                    event.exchange,
+                    candle,
+                    &now,
+                    writer,
+                )
+                .await?;
+            }
         }
         _ => {}
     }
@@ -596,7 +598,7 @@ async fn persist_event(
     Ok(())
 }
 
-async fn persist_candle(
+pub async fn persist_candle(
     output_dir: &str,
     instrument: &str,
     exchange: barter_instrument::exchange::ExchangeId,
@@ -671,8 +673,8 @@ fn apply_event_to_strategy_context(
                 high: candle.high,
                 low: candle.low,
                 volume: candle.volume,
-                bid_volume: 0.0,
-                is_final: true,
+                bid_volume: candle.bid_volume,
+                is_final: candle.is_final,
             };
 
             match interval {

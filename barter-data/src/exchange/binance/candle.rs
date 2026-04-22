@@ -58,8 +58,20 @@ pub struct BinanceKline {
         deserialize_with = "barter_integration::serde::de::de_str"
     )]
     pub volume: f64,
+    #[serde(
+        alias = "V",
+        deserialize_with = "barter_integration::serde::de::de_str"
+    )]
+    pub bid_volume: f64,
+    #[serde(
+        alias = "Q",
+        deserialize_with = "barter_integration::serde::de::de_str"
+    )]
+    pub bid_quote_asset_volume: f64,
     #[serde(alias = "n")]
     pub trade_count: u64,
+    #[serde(alias = "x")]
+    pub is_final: bool,
 }
 
 impl Identifier<Option<SubscriptionId>> for BinanceCandle1m {
@@ -92,7 +104,10 @@ impl<InstrumentKey> From<(ExchangeId, InstrumentKey, BinanceCandle1m)>
                 low: candle.kline.low,
                 close: candle.kline.close,
                 volume: candle.kline.volume,
+                bid_volume: candle.kline.bid_volume,
+                bid_quote_asset_volume: candle.kline.bid_quote_asset_volume,
                 trade_count: candle.kline.trade_count,
+                is_final: candle.kline.is_final,
             },
         })])
     }
@@ -116,7 +131,10 @@ impl<InstrumentKey> From<(ExchangeId, InstrumentKey, BinanceCandle1h)>
                 low: candle.kline.low,
                 close: candle.kline.close,
                 volume: candle.kline.volume,
+                bid_volume: candle.kline.bid_volume,
+                bid_quote_asset_volume: candle.kline.bid_quote_asset_volume,
                 trade_count: candle.kline.trade_count,
+                is_final: candle.kline.is_final,
             },
         })])
     }

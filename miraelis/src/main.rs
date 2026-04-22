@@ -189,7 +189,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .iter()
         .map(|s| s.symbol.to_ascii_uppercase())
         .collect();
-    warm_up_trade_windows(&config.binance_rest_base_url, &warmup_symbols, &mut engine).await;
+    warm_up_trade_windows(
+        &config.binance_rest_base_url,
+        &warmup_symbols,
+        &config.market_data_output_dir,
+        &mut engine,
+    )
+    .await;
 
     let (order_tx, order_rx) = tokio::sync::mpsc::unbounded_channel();
     let (order_response_tx, mut order_response_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -634,9 +640,13 @@ impl RateLimiter {
 async fn warm_up_trade_windows(
     rest_base: &str,
     symbols: &[String],
+    output_dir: &str,
     engine: &mut strategy::StrategyEngine,
 ) {
+    use barter_data::subscription::candle::Candle;
+    use chrono::Utc;
     use quotation::trade_window::{QuotationKline, UhfKlineInterval, UhfTradeWindow};
+    use quotation::{persist_candle, AsyncRollbackWriter};
 
     #[derive(Debug)]
     struct RawKline {
@@ -768,6 +778,8 @@ async fn warm_up_trade_windows(
         }));
     }
 
+    let (writer, writer_task) = AsyncRollbackWriter::start(2048, 0);
+
     let mut loaded = 0usize;
     let mut failed = 0usize;
     for task in tasks {
@@ -775,12 +787,18 @@ async fn warm_up_trade_windows(
             failed += 1;
             continue;
         };
+        let klines_1h_count = klines_1h.len();
+        let klines_1m_count = klines_1m.len();
         let sym_lower = symbol.to_ascii_lowercase();
         let window = engine
             .ctx
             .trades
             .entry(sym_lower.clone())
             .or_insert_with(|| UhfTradeWindow::new(sym_lower.clone()));
+
+        let now = Utc::now().to_rfc3339();
+        let exchange = barter_instrument::exchange::ExchangeId::BinanceFuturesUsd;
+
         for k in &klines_1h {
             window.update_kline(QuotationKline {
                 symbol: sym_lower.clone(),
@@ -798,6 +816,29 @@ async fn warm_up_trade_windows(
                 bid_volume: 0.0,
                 is_final: true,
             });
+
+            let candle = Candle {
+                close_time: chrono::DateTime::<Utc>::from_timestamp(
+                    (k.close_time / 1000) as i64,
+                    0,
+                )
+                .unwrap_or_else(|| Utc::now()),
+                open: k.open,
+                close: k.close,
+                high: k.high,
+                low: k.low,
+                volume: k.volume,
+                bid_volume: 0.0,
+                bid_quote_asset_volume: 0.0,
+                trade_count: 0,
+                is_final: true,
+            };
+            let instrument = format!("{}|kline_1h", symbol);
+            if let Err(e) =
+                persist_candle(output_dir, &instrument, exchange, candle, &now, &writer).await
+            {
+                warn!(instrument, ?e, "failed to persist historical 1h kline");
+            }
         }
         for k in &klines_1m {
             window.update_kline(QuotationKline {
@@ -816,11 +857,48 @@ async fn warm_up_trade_windows(
                 bid_volume: 0.0,
                 is_final: true,
             });
+
+            let candle = Candle {
+                close_time: chrono::DateTime::<Utc>::from_timestamp(
+                    (k.close_time / 1000) as i64,
+                    0,
+                )
+                .unwrap_or_else(|| Utc::now()),
+                open: k.open,
+                close: k.close,
+                high: k.high,
+                low: k.low,
+                volume: k.volume,
+                bid_volume: 0.0,
+                bid_quote_asset_volume: 0.0,
+                trade_count: 0,
+                is_final: true,
+            };
+            let instrument = format!("{}|kline_1m", symbol);
+            if let Err(e) =
+                persist_candle(output_dir, &instrument, exchange, candle, &now, &writer).await
+            {
+                warn!(instrument, ?e, "failed to persist historical 1m kline");
+            }
         }
+
+        info!(
+            symbol = %symbol,
+            klines_1h = klines_1h_count,
+            klines_1m = klines_1m_count,
+            "warm_up: symbol loaded"
+        );
+
         loaded += 1;
     }
+
+    drop(writer);
+    if let Err(e) = writer_task.await {
+        warn!(?e, "warm_up writer task failed");
+    }
+
     info!(
         loaded,
-        failed, "warm_up: historical klines loaded into trade windows"
+        failed, "warm_up: historical klines loaded into trade windows and persisted"
     );
 }
