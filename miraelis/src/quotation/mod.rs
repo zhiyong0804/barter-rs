@@ -343,6 +343,9 @@ pub async fn run_market_streams(
     engine: &mut StrategyEngine,
     telegram_notifier: Option<&TelegramNotifier>,
     mut order_response_rx: Option<&mut UnboundedReceiver<OrderResponse>>,
+    mut warmup_event_rx: Option<
+        &mut UnboundedReceiver<barter_data::event::MarketEvent<String, DataKind>>,
+    >,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     fs::create_dir_all(output_dir).await?;
     let (writer, writer_task) = AsyncRollbackWriter::start(2048, max_shard_bytes);
@@ -440,8 +443,40 @@ pub async fn run_market_streams(
         .select_all()
         .with_error_handler(|error| warn!(?error, "market stream generated error"));
 
+    async fn drain_warmup_events(
+        output_dir: &str,
+        warmup_event_rx: &mut Option<
+            &mut UnboundedReceiver<barter_data::event::MarketEvent<String, DataKind>>,
+        >,
+        engine: &mut StrategyEngine,
+        writer: &AsyncRollbackWriter,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let Some(rx) = warmup_event_rx.as_mut() else {
+            return Ok(());
+        };
+
+        let mut drained = 0usize;
+        while drained < 256 {
+            match rx.try_recv() {
+                Ok(event) => {
+                    apply_event_to_strategy_context(engine, &event);
+                    persist_event(output_dir, event, writer).await?;
+                    drained += 1;
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    *warmup_event_rx = None;
+                    break;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     if let Some(rx) = order_response_rx.as_mut() {
         loop {
+            drain_warmup_events(output_dir, &mut warmup_event_rx, engine, &writer).await?;
             tokio::select! {
                 _ = debug_interval.tick() => {
                     dump_trade_window_debug(engine, debug_trade_window_symbol.as_deref());
@@ -476,6 +511,7 @@ pub async fn run_market_streams(
         }
     } else {
         loop {
+            drain_warmup_events(output_dir, &mut warmup_event_rx, engine, &writer).await?;
             tokio::select! {
                 _ = debug_interval.tick() => {
                     dump_trade_window_debug(engine, debug_trade_window_symbol.as_deref());

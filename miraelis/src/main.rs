@@ -189,13 +189,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .iter()
         .map(|s| s.symbol.to_ascii_uppercase())
         .collect();
-    warm_up_trade_windows(
-        &config.binance_rest_base_url,
-        &warmup_symbols,
-        &config.market_data_output_dir,
-        &mut engine,
-    )
-    .await;
+    let (warmup_event_tx, mut warmup_event_rx) = tokio::sync::mpsc::unbounded_channel();
+    let warmup_rest_base = config.binance_rest_base_url.clone();
+    tokio::spawn(async move {
+        warm_up_trade_windows(&warmup_rest_base, &warmup_symbols, warmup_event_tx).await;
+    });
 
     let (order_tx, order_rx) = tokio::sync::mpsc::unbounded_channel();
     let (order_response_tx, mut order_response_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -254,6 +252,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         } else {
             None
         },
+        Some(&mut warmup_event_rx),
     )
     .await?;
     Ok(())
@@ -640,13 +639,12 @@ impl RateLimiter {
 async fn warm_up_trade_windows(
     rest_base: &str,
     symbols: &[String],
-    output_dir: &str,
-    engine: &mut strategy::StrategyEngine,
+    event_tx: tokio::sync::mpsc::UnboundedSender<
+        barter_data::event::MarketEvent<String, barter_data::event::DataKind>,
+    >,
 ) {
     use barter_data::subscription::candle::Candle;
     use chrono::Utc;
-    use quotation::trade_window::{QuotationKline, UhfKlineInterval, UhfTradeWindow};
-    use quotation::{persist_candle, AsyncRollbackWriter};
 
     #[derive(Debug)]
     struct RawKline {
@@ -778,8 +776,6 @@ async fn warm_up_trade_windows(
         }));
     }
 
-    let (writer, writer_task) = AsyncRollbackWriter::start(2048, 0);
-
     let total_symbols = tasks.len();
     let mut processed = 0usize;
     let mut loaded = 0usize;
@@ -805,40 +801,12 @@ async fn warm_up_trade_windows(
         };
         let klines_1h_count = klines_1h.len();
         let klines_1m_count = klines_1m.len();
-        let sym_lower = symbol.to_ascii_lowercase();
-        let window = engine
-            .ctx
-            .trades
-            .entry(sym_lower.clone())
-            .or_insert_with(|| UhfTradeWindow::new(sym_lower.clone()));
-
-        let now = Utc::now().to_rfc3339();
         let exchange = barter_instrument::exchange::ExchangeId::BinanceFuturesUsd;
 
         for k in &klines_1h {
-            window.update_kline(QuotationKline {
-                symbol: sym_lower.clone(),
-                event_time: k.close_time,
-                start_timestamp: k.open_time,
-                end_timestamp: k.close_time,
-                interval: UhfKlineInterval::H1,
-                start_trade_id: 0,
-                end_trade_id: 0,
-                open: k.open,
-                close: k.close,
-                high: k.high,
-                low: k.low,
-                volume: k.volume,
-                bid_volume: 0.0,
-                is_final: true,
-            });
-
             let candle = Candle {
-                close_time: chrono::DateTime::<Utc>::from_timestamp(
-                    (k.close_time / 1000) as i64,
-                    0,
-                )
-                .unwrap_or_else(|| Utc::now()),
+                close_time: chrono::DateTime::<Utc>::from_timestamp_millis(k.close_time as i64)
+                    .unwrap_or_else(|| Utc::now()),
                 open: k.open,
                 close: k.close,
                 high: k.high,
@@ -850,36 +818,25 @@ async fn warm_up_trade_windows(
                 is_final: true,
             };
             let instrument = format!("{}|kline_1h", symbol);
-            if let Err(e) =
-                persist_candle(output_dir, &instrument, exchange, candle, &now, &writer).await
-            {
-                warn!(instrument, ?e, "failed to persist historical 1h kline");
+            let event = barter_data::event::MarketEvent {
+                time_exchange: candle.close_time,
+                time_received: Utc::now(),
+                exchange,
+                instrument,
+                kind: barter_data::event::DataKind::Candle(candle),
+            };
+            if let Err(error) = event_tx.send(event) {
+                warn!(
+                    ?error,
+                    "warm_up: event receiver dropped while sending 1h kline"
+                );
+                return;
             }
         }
         for k in &klines_1m {
-            window.update_kline(QuotationKline {
-                symbol: sym_lower.clone(),
-                event_time: k.close_time,
-                start_timestamp: k.open_time,
-                end_timestamp: k.close_time,
-                interval: UhfKlineInterval::M1,
-                start_trade_id: 0,
-                end_trade_id: 0,
-                open: k.open,
-                close: k.close,
-                high: k.high,
-                low: k.low,
-                volume: k.volume,
-                bid_volume: 0.0,
-                is_final: true,
-            });
-
             let candle = Candle {
-                close_time: chrono::DateTime::<Utc>::from_timestamp(
-                    (k.close_time / 1000) as i64,
-                    0,
-                )
-                .unwrap_or_else(|| Utc::now()),
+                close_time: chrono::DateTime::<Utc>::from_timestamp_millis(k.close_time as i64)
+                    .unwrap_or_else(|| Utc::now()),
                 open: k.open,
                 close: k.close,
                 high: k.high,
@@ -891,10 +848,19 @@ async fn warm_up_trade_windows(
                 is_final: true,
             };
             let instrument = format!("{}|kline_1m", symbol);
-            if let Err(e) =
-                persist_candle(output_dir, &instrument, exchange, candle, &now, &writer).await
-            {
-                warn!(instrument, ?e, "failed to persist historical 1m kline");
+            let event = barter_data::event::MarketEvent {
+                time_exchange: candle.close_time,
+                time_received: Utc::now(),
+                exchange,
+                instrument,
+                kind: barter_data::event::DataKind::Candle(candle),
+            };
+            if let Err(error) = event_tx.send(event) {
+                warn!(
+                    ?error,
+                    "warm_up: event receiver dropped while sending 1m kline"
+                );
+                return;
             }
         }
 
@@ -920,11 +886,6 @@ async fn warm_up_trade_windows(
             failed,
             "warm_up: progress"
         );
-    }
-
-    drop(writer);
-    if let Err(e) = writer_task.await {
-        warn!(?e, "warm_up writer task failed");
     }
 
     info!(
