@@ -18,7 +18,7 @@ use std::{
 };
 use tokio::{
     fs,
-    io::{AsyncSeekExt, AsyncWriteExt},
+    io::AsyncWriteExt,
     sync::mpsc::UnboundedReceiver,
     time::{interval, sleep, Duration},
 };
@@ -52,7 +52,6 @@ struct ShardState {
     /// 当前分片已写入字节数
     current_bytes: u64,
     data_file: fs::File,
-    rollback_file: fs::File,
 }
 
 /// 将逻辑路径 + 日期 + 序号 拼成物理路径。
@@ -185,7 +184,7 @@ impl AsyncRollbackWriter {
                 path: path.to_owned(),
                 line,
             })
-            .map_err(|error| format!("async rollback writer channel closed: {error}").into())
+            .map_err(|error| format!("async writer channel closed: {error}").into())
     }
 }
 
@@ -220,8 +219,8 @@ async fn write_sharded(
                 (physical, today.clone(), idx)
             }
         };
-        match open_rollback_pair(&physical).await {
-            Ok((data_file, rollback_file)) => {
+        match open_data_file(&physical).await {
+            Ok(data_file) => {
                 let current_bytes = data_file.metadata().await.map(|m| m.len()).unwrap_or(0);
                 info!(
                     logical = %req.path,
@@ -237,12 +236,11 @@ async fn write_sharded(
                         shard_idx: new_idx,
                         current_bytes,
                         data_file,
-                        rollback_file,
                     },
                 );
             }
             Err(error) => {
-                warn!(path = %req.path, ?error, "open shard rollback writer failed");
+                warn!(path = %req.path, ?error, "open shard writer failed");
                 return;
             }
         }
@@ -251,25 +249,20 @@ async fn write_sharded(
     let Some(shard) = shards.get_mut(&req.path) else {
         return;
     };
-    match append_with_rollback(&mut shard.data_file, &mut shard.rollback_file, &req.line).await {
+    match append_line(&mut shard.data_file, &req.line).await {
         Ok(()) => {
             shard.current_bytes += req.line.len() as u64 + 1; // +1 for newline
         }
         Err(error) => {
-            warn!(path = %shard.physical_path, ?error, "append with rollback failed");
+            warn!(path = %shard.physical_path, ?error, "append line failed");
         }
     }
 }
 
-async fn open_rollback_pair(
-    path: &str,
-) -> Result<(fs::File, fs::File), Box<dyn std::error::Error + Send + Sync>> {
+async fn open_data_file(path: &str) -> Result<fs::File, Box<dyn std::error::Error + Send + Sync>> {
     ensure_parent_dir(path).await?;
 
-    let rollback_path = format!("{path}.rollback");
-    ensure_parent_dir(&rollback_path).await?;
-
-    let mut data_file = fs::OpenOptions::new()
+    let data_file = fs::OpenOptions::new()
         .create(true)
         .read(true)
         .write(true)
@@ -277,58 +270,16 @@ async fn open_rollback_pair(
         .open(path)
         .await?;
 
-    let mut rollback_file = fs::OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .open(&rollback_path)
-        .await?;
-
-    let rollback_content = fs::read_to_string(&rollback_path).await.unwrap_or_default();
-    if let Some(offset) = rollback_content
-        .strip_prefix("B ")
-        .and_then(|value| value.trim().parse::<u64>().ok())
-    {
-        data_file.set_len(offset).await?;
-        data_file.seek(std::io::SeekFrom::End(0)).await?;
-    }
-
-    let current_len = data_file.metadata().await?.len();
-    rollback_file.set_len(0).await?;
-    rollback_file.seek(std::io::SeekFrom::Start(0)).await?;
-    rollback_file
-        .write_all(format!("C {current_len}\n").as_bytes())
-        .await?;
-    rollback_file.sync_data().await?;
-
-    Ok((data_file, rollback_file))
+    Ok(data_file)
 }
 
-async fn append_with_rollback(
+async fn append_line(
     data_file: &mut fs::File,
-    rollback_file: &mut fs::File,
     line: &[u8],
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let start_offset = data_file.metadata().await?.len();
-
-    rollback_file.set_len(0).await?;
-    rollback_file.seek(std::io::SeekFrom::Start(0)).await?;
-    rollback_file
-        .write_all(format!("B {start_offset}\n").as_bytes())
-        .await?;
-    rollback_file.sync_data().await?;
-
     data_file.write_all(line).await?;
     data_file.write_all(b"\n").await?;
     data_file.sync_data().await?;
-
-    let committed_offset = start_offset + line.len() as u64 + 1;
-    rollback_file.set_len(0).await?;
-    rollback_file.seek(std::io::SeekFrom::Start(0)).await?;
-    rollback_file
-        .write_all(format!("C {committed_offset}\n").as_bytes())
-        .await?;
-    rollback_file.sync_data().await?;
 
     Ok(())
 }
