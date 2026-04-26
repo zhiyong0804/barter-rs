@@ -1,0 +1,218 @@
+[
+  {
+    "start_timestamp": 1699913600000,
+    "open": 95.0,
+    "close": 95.2,
+    "high": 95.35,
+    "low": 94.85,
+    "volume": 1200.0,
+    "bid_volume": 600.0
+  },
+  {
+    "start_timestamp": 1699917200000,
+    "open": 95.2,
+    "close": 95.4,
+    "high": 95.55,
+    "low": 95.05,
+    "volume": 1205.0,
+    "bid_volume": 602.5
+  },
+  {
+    "start_timestamp": 1699920800000,
+    "open": 95.4,
+    "close": 95.6,
+    "high": 95.75,
+    "low": 95.25,
+    "volume": 1210.0,
+    "bid_volume": 605.0
+  },
+  {
+    "start_timestamp": 1699924400000,
+    "open": 95.6,
+    "close": 95.8,
+    "high": 95.95,
+    "low": 95.45,
+    "volume": 1215.0,
+    "bid_volume": 607.5
+  },
+  {
+    "start_timestamp": 1699928000000,
+    "open": 95.8,
+    "close": 96.0,
+    "high": 96.15,
+    "low": 95.65,
+    "volume": 1220.0,
+    "bid_volume": 610.0
+  },
+  {
+    "start_timestamp": 1699931600000,
+    "open": 96.0,
+    "close": 96.2,
+    "high": 96.35,
+    "low": 95.85,
+    "volume": 1225.0,
+    "bid_volume": 612.5
+  },
+  {
+    "start_timestamp": 1699935200000,
+    "open": 96.2,
+    "close": 96.4,
+    "high": 96.55,
+    "low": 96.05,
+    "volume": 1230.0,
+    "bid_volume": 615.0
+  },
+  {
+    "start_timestamp": 1699938800000,
+    "open": 96.4,
+    "close": 96.6,
+    "high": 96.75,
+    "low": 96.25,
+    "volume": 1235.0,
+    "bid_volume": 617.5
+  },
+  {
+    "start_timestamp": 1699942400000,
+    "open": 96.6,
+    "close": 96.8,
+    "high": 96.95,
+    "low": 96.45,
+    "volume": 1240.0,
+    "bid_volume": 620.0
+  },
+  {
+    "start_timestamp": 1699946000000,
+    "open": 96.8,
+    "close": 97.0,
+    "high": 97.15,
+    "low": 96.65,
+    "volume": 1245.0,
+    "bid_volume": 622.5
+  },
+  {
+    "start_timestamp": 1699949600000,
+    "open": 97.0,
+    "close": 97.2,
+    "high": 97.35,
+    "low": 96.85,
+    "volume": 1250.0,
+    "bid_volume": 625.0
+  },
+  {
+    "start_timestamp": 1699953200000,
+    "open": 97.2,
+    "close": 97.4,
+    "high": 97.55,
+    "low": 97.05,
+    "volume": 1255.0,
+    "bid_volume": 627.5
+  },
+  {
+    "start_timestamp": 1699956800000,
+    "open": 97.4,
+    "close": 97.6,
+    "high": 97.75,
+    "low": 97.25,
+    "volume": 1260.0,
+    "bid_volume": 630.0
+  },
+  {
+    "start_timestamp": 1699960400000,
+    "open": 97.6,
+    "close": 97.8,
+    "high": 97.95,
+    "low": 97.45,
+    "volume": 1265.0,
+    "bid_volume": 632.5
+  },
+  {
+    "start_timestamp": 1699964000000,
+    "open": 97.8,
+    "close": 98.0,
+    "high": 98.15,
+    "low": 97.65,
+    "volume": 1270.0,
+    "bid_volume": 635.0
+  },
+  {
+    "start_timestamp": 1699967600000,
+    "open": 98.0,
+    "close": 98.2,
+    "high": 98.35,
+    "low": 97.85,
+    "volume": 1275.0,
+    "bid_volume": 637.5
+  },
+  {
+    "start_timestamp": 1699971200000,
+    "open": 98.2,
+    "close": 98.4,
+    "high": 98.55,
+    "low": 98.05,
+    "volume": 1280.0,
+    "bid_volume": 640.0
+  },
+  {
+    "start_timestamp": 1699974800000,
+    "open": 98.4,
+    "close": 98.6,
+    "high": 98.75,
+    "low": 98.25,
+    "volume": 1285.0,
+    "bid_volume": 642.5
+  },
+  {
+    "start_timestamp": 1699978400000,
+    "open": 98.6,
+    "close": 98.8,
+    "high": 98.95,
+    "low": 98.45,
+    "volume": 1290.0,
+    "bid_volume": 645.0
+  },
+  {
+    "start_timestamp": 1699982000000,
+    "open": 98.8,
+    "close": 99.0,
+    "high": 99.15,
+    "low": 98.65,
+    "volume": 1295.0,
+    "bid_volume": 647.5
+  },
+  {
+    "start_timestamp": 1699985600000,
+    "open": 99.0,
+    "close": 99.2,
+    "high": 99.35,
+    "low": 98.85,
+    "volume": 1300.0,
+    "bid_volume": 650.0
+  },
+  {
+    "start_timestamp": 1699989200000,
+    "open": 99.2,
+    "close": 99.4,
+    "high": 99.55,
+    "low": 99.05,
+    "volume": 1305.0,
+    "bid_volume": 652.5
+  },
+  {
+    "start_timestamp": 1699992800000,
+    "open": 99.4,
+    "close": 99.6,
+    "high": 99.75,
+    "low": 99.25,
+    "volume": 1310.0,
+    "bid_volume": 655.0
+  },
+  {
+    "start_timestamp": 1699996400000,
+    "open": 99.6,
+    "close": 99.8,
+    "high": 99.95,
+    "low": 99.45,
+    "volume": 1315.0,
+    "bid_volume": 657.5
+  }
+]

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::quotation::trade_window::{
+use crate::quotation::trade_window::{
     BestBidAskItem, QuotationKline, QuotationTicker, TradeItem, UhfTradeWindow,
 };
 use crate::strategy::frame::OrderResponse;
@@ -219,3 +219,4 @@ pub mod module_id {
     pub const HUGE_MOMENTUM_SIGNAL: u64 = 6;
     pub const FRAME_NEEDLE: u64 = 7;
 }
+

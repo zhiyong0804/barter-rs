@@ -9,7 +9,7 @@ use crate::{
     signal::{HugeMomentumSignal, SignalLevel, SignalType, TradeSignalBase},
 };
 
-use super::{module_id, QuotationTicker, StrategyContext, StrategyModule};
+use super::{module_id, StrategyContext, StrategyModule};
 
 #[derive(Debug, Clone, Default)]
 pub struct HugeMomentumSymbolContext {
@@ -746,3 +746,4 @@ mod tests {
         );
     }
 }
+
