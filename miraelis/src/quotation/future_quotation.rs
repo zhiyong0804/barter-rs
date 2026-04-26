@@ -41,7 +41,7 @@ impl FutureQuotation {
         mut order_response_rx: Option<&mut UnboundedReceiver<OrderResponse>>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let debug_trade_window_symbol = debug_trade_window_symbol
-            .map(|value| value.trim().to_ascii_lowercase())
+            .map(|value| value.trim().to_ascii_uppercase())
             .filter(|value| !value.is_empty());
         let mut debug_interval = interval(Duration::from_secs(
             debug_trade_window_interval_secs.max(60),
@@ -320,6 +320,7 @@ impl FutureQuotation {
                     }
                 };
                 let status = resp.status();
+                // tracing::debug!("fetch_klines return: {:#?}", resp);
                 if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.as_u16() == 418 {
                     let wait = resp
                         .headers()
@@ -471,6 +472,7 @@ impl FutureQuotation {
                     instrument,
                     kind: barter_data::event::DataKind::Candle(candle),
                 };
+                // tracing::debug!("successed fetch_klines 1m symbol={}", symbol);
                 if let Err(error) = writer.write_market_event(event) {
                     tracing::warn!(
                         ?error,

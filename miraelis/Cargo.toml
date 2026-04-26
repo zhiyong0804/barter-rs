@@ -22,3 +22,5 @@ tokio-tungstenite = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+bytes = "1.5"
+memmap2 = "0.9.10"
