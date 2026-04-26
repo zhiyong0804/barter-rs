@@ -14,7 +14,7 @@ use tokio::{
     time::{interval, Duration},
 };
 use tracing::{info, warn};
-
+use std::sync::Arc;
 use crate::signal::{SignalType, TelegramNotifier};
 use crate::strategy::frame::OrderResponse;
 use crate::strategy::{MarketEvent, StrategyEngine};
@@ -36,7 +36,7 @@ impl FutureQuotation {
         debug_trade_window_symbol: Option<&str>,
         debug_trade_window_interval_secs: u64,
         engine: &mut StrategyEngine,
-        writer: &AsyncRollbackWriter,
+        writer: Arc<AsyncRollbackWriter>,
         telegram_notifier: Option<&TelegramNotifier>,
         mut order_response_rx: Option<&mut UnboundedReceiver<OrderResponse>>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -257,7 +257,7 @@ impl FutureQuotation {
     pub async fn warm_up_trade_windows(
         rest_base: &str,
         symbols: &[String],
-        writer: &AsyncRollbackWriter,
+        writer: Arc<AsyncRollbackWriter>,
     ) {
         use barter_data::subscription::candle::Candle;
         use chrono::Utc;

@@ -2,10 +2,14 @@ use barter_data::event::{DataKind, MarketEvent};
 use bytes::Bytes;
 use chrono::Utc;
 use crossbeam_channel::{self, TryRecvError};
+use memmap2::MmapMut;
 use std::{
     cell::UnsafeCell,
     collections::HashMap,
+    fs::OpenOptions,
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
+    ptr,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
@@ -27,26 +31,39 @@ pub struct SymbolSpec {
 
 /// 环形缓冲区块
 struct Chunk {
-    // 使用 Vec<u8> 作为内存缓冲区
-    buffer: UnsafeCell<Vec<u8>>,
+    // 使用 Arc<MmapMut> 实现线程间安全共享
+    buffer: Arc<MmapMut>,
     // 原子操作保证并发安全性
     offset: AtomicUsize,
     max_size: usize,
 }
 
 // 为了使 Chunk 能够在线程间安全共享，我们需要为它实现 Send 和 Sync。
-// 注意：这需要我们确保对 UnsafeCell 的所有访问都是线程安全的。
+// 由于 Arc<MmapMut> 已经是 Send + Sync 的（如果 MmapMut 是的话），并且 AtomicUsize 也是，
+// 所以我们不需要做任何特殊的事情。但为了明确起见，我们还是加上。
+// 实际上，由于 Arc<MmapMut> 已经是 Send + Sync 的，我们甚至不需要手动实现。
+// 但为了代码清晰度，我们保留它们。
 unsafe impl Send for Chunk {}
 unsafe impl Sync for Chunk {}
 
 impl Chunk {
-    fn new(_file_path: String, max_size: usize) -> std::io::Result<Self> {
-        let mut buffer = Vec::with_capacity(max_size);
-        // 预分配内存以提高性能
-        buffer.resize(max_size, 0);
-        
+    fn new(file_path: String, max_size: usize) -> std::io::Result<Self> {
+        // 创建或打开文件
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .mode(0o644) // 设置文件权限
+            .open(&file_path)?;
+
+        // 设置文件长度
+        file.set_len(max_size as u64)?;
+
+        // 创建可变内存映射
+        let mmap = unsafe { MmapMut::map_mut(&file)? };
+
         Ok(Self {
-            buffer: UnsafeCell::new(buffer),
+            buffer: Arc::new(mmap),
             offset: AtomicUsize::new(0),
             max_size,
         })
@@ -63,28 +80,42 @@ impl Chunk {
             ));
         }
 
-        // 获取缓冲区的可变引用
-        let buffer = unsafe { &mut *self.buffer.get() };
+        // --- 关键部分：安全地写入数据 ---
+        // 1. 计算目标地址
+        let dst_ptr = self.buffer.as_ptr() as *mut u8; // 获取 MmapMut 内部数据的起始地址
+        let write_ptr = unsafe { dst_ptr.add(current_offset) }; // 计算写入地址
 
-        // 写入数据
-        buffer[current_offset..current_offset + line.len()].copy_from_slice(line);
-        buffer[current_offset + line.len()] = b'\n'; // 添加换行符
+        // 2. 执行内存拷贝
+        // 这是 unsafe 的核心部分，我们必须确保：
+        // - src_ptr 和 dst_ptr 指向有效的内存
+        // - 内存区域不重叠（对于 copy_nonoverlapping）
+        // - 写入大小不超过声明的长度
+        let src_ptr = line.as_ptr();
+        unsafe {
+            ptr::copy_nonoverlapping(src_ptr, write_ptr, line.len()); // 拷贝数据
+            *write_ptr.add(line.len()) = b'\n'; // 添加换行符
+        }
 
-        // 更新偏移量
+        // 3. 更新偏移量
         self.offset.store(current_offset + len, Ordering::Release);
 
         Ok(())
     }
 
     fn clear(&self) -> std::io::Result<()> {
+        // 重置偏移量即可，无需清零整个内存区域
         self.offset.store(0, Ordering::Release);
         Ok(())
     }
 
     fn get_data(&self) -> &[u8] {
         let current_offset = self.offset.load(Ordering::Acquire);
-        let buffer = unsafe { &*self.buffer.get() };
-        &buffer[..current_offset]
+        // 安全地从 MmapMut 创建一个切片
+        // 这是安全的，因为：
+        // 1. self.buffer.as_ptr() 给出了有效的起始地址
+        // 2. current_offset 是由我们自己通过原子操作维护的，不会越界
+        // 3. MmapMut 的生命周期由 Arc 管理，只要 Chunk 存在，它就存在
+        unsafe { std::slice::from_raw_parts(self.buffer.as_ptr(), current_offset) }
     }
 }
 
@@ -95,11 +126,11 @@ struct RingBuffer {
 }
 
 impl RingBuffer {
-    fn new(num_chunks: usize, chunk_size: usize) -> std::io::Result<Self> {
+    fn new(num_chunks: usize, chunk_size: usize, base_file_path: &str) -> std::io::Result<Self> {
         let mut chunks = Vec::with_capacity(num_chunks);
-        for _i in 0..num_chunks {
-            // Chunk 不再需要文件路径
-            let chunk = Chunk::new(String::new(), chunk_size)?;
+        for i in 0..num_chunks {
+            let file_path = format!("{}_chunk_{}.dat", base_file_path, i);
+            let chunk = Chunk::new(file_path, chunk_size)?;
             chunks.push(Arc::new(chunk));
         }
         Ok(Self {
@@ -151,7 +182,7 @@ struct ShardState {
 
 impl ShardState {
     fn new(
-        _physical_path: String,
+        physical_path: String,
         date_str: String,
         shard_idx: u32,
         current_bytes: u64,
@@ -162,7 +193,7 @@ impl ShardState {
             shard_idx,
             current_bytes,
             data_file,
-            ring_buffer: RingBuffer::new(4, 1024 * 1024 * 16)?, // 4 chunks, 16MB each
+            ring_buffer: RingBuffer::new(4, 1024 * 1024 * 200, &physical_path)?, // 4 chunks, 200MB each
         })
     }
 
@@ -303,7 +334,7 @@ impl AsyncRollbackWriter {
                                     "kind": kind,
                                     "data": candle,
                                 });
-                                // tracing::debug!("recved: {}", payload);
+
                                 let req = WriteRequest {
                                     path: format!("{}/{}", output_dir, file_name),
                                     line: Bytes::from(
@@ -590,6 +621,7 @@ async fn ensure_parent_dir(path: &str) -> Result<(), Box<dyn std::error::Error +
 impl Drop for AsyncRollbackWriter {
     fn drop(&mut self) {
         self.shutdown_flag.store(true, Ordering::Relaxed);
+        tracing::error!("writer dropped");
         // Note: We cannot await the task here as Drop is synchronous.
         // The task should check the shutdown flag and terminate itself.
     }

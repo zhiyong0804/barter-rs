@@ -3,7 +3,7 @@ use barter_integration::{
     error::SocketError,
     protocol::http::{public::PublicNoHeaders, rest::client::RestClient},
 };
-use std::{fs, path::Path, time::Duration};
+use std::{fs, path::Path, sync::Arc, time::Duration};
 
 use tracing::*;
 
@@ -62,7 +62,10 @@ async fn sync_exchange_info(
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     init_logging_with_prefix("miraelis.log");
 
-    info!("startup miraelis");
+    info!(
+        "
+    "
+    );
 
     let config_override = config::parse_config_arg()?;
     let (config, _config_path, _project_root) =
@@ -102,7 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut engine = StrategyEngine::new();
 
     let (writer, _writer_task) = AsyncRollbackWriter::start(
-        2048,
+        20480,
         config.market_data_shard_bytes,
         config.market_data_output_dir.as_str(),
     )
@@ -116,10 +119,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .map(|s| s.symbol.to_ascii_uppercase())
         .collect();
     let warmup_rest_base = config.binance_rest_base_url.clone();
+    let writer = Arc::new(writer);
     let writer_clone = writer.clone();
     tokio::spawn(async move {
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-        FutureQuotation::warm_up_trade_windows(&warmup_rest_base, &warmup_symbols, &writer_clone)
+        FutureQuotation::warm_up_trade_windows(&warmup_rest_base, &warmup_symbols, writer_clone)
             .await;
     });
 
@@ -172,7 +176,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         config.debug_trade_window_symbol.as_deref(),
         config.debug_trade_window_interval_secs,
         &mut engine,
-        &writer,
+        writer.clone(),
         telegram_notifier.as_ref(),
         if config.execution_cfg.enabled {
             Some(&mut order_response_rx)
