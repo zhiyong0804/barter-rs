@@ -2,12 +2,9 @@ use barter_data::event::{DataKind, MarketEvent};
 use bytes::Bytes;
 use chrono::Utc;
 use crossbeam_channel::{self, TryRecvError};
-use memmap2::MmapMut;
+use memmap2::{MmapMut, MmapOptions}; // 添加 MmapOptions
 use std::{
-    cell::UnsafeCell,
     collections::HashMap,
-    fs::OpenOptions,
-    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     ptr,
     sync::{
@@ -29,38 +26,21 @@ pub struct SymbolSpec {
     pub quote: String,
 }
 
-/// 环形缓冲区块
 struct Chunk {
-    // 使用 Arc<MmapMut> 实现线程间安全共享
     buffer: Arc<MmapMut>,
-    // 原子操作保证并发安全性
     offset: AtomicUsize,
     max_size: usize,
 }
 
-// 为了使 Chunk 能够在线程间安全共享，我们需要为它实现 Send 和 Sync。
-// 由于 Arc<MmapMut> 已经是 Send + Sync 的（如果 MmapMut 是的话），并且 AtomicUsize 也是，
-// 所以我们不需要做任何特殊的事情。但为了明确起见，我们还是加上。
-// 实际上，由于 Arc<MmapMut> 已经是 Send + Sync 的，我们甚至不需要手动实现。
-// 但为了代码清晰度，我们保留它们。
 unsafe impl Send for Chunk {}
 unsafe impl Sync for Chunk {}
 
 impl Chunk {
-    fn new(file_path: String, max_size: usize) -> std::io::Result<Self> {
-        // 创建或打开文件
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .mode(0o644) // 设置文件权限
-            .open(&file_path)?;
-
-        // 设置文件长度
-        file.set_len(max_size as u64)?;
-
-        // 创建可变内存映射
-        let mmap = unsafe { MmapMut::map_mut(&file)? };
+    fn new(max_size: usize) -> std::io::Result<Self> {
+        let mmap = MmapOptions::new().len(max_size).map_anon().map_err(|err| {
+            tracing::error!("mmap {} bytes failed with err:{}", max_size, err);
+            err
+        })?;
 
         Ok(Self {
             buffer: Arc::new(mmap),
@@ -126,11 +106,10 @@ struct RingBuffer {
 }
 
 impl RingBuffer {
-    fn new(num_chunks: usize, chunk_size: usize, base_file_path: &str) -> std::io::Result<Self> {
+    fn new(num_chunks: usize, chunk_size: usize) -> std::io::Result<Self> {
         let mut chunks = Vec::with_capacity(num_chunks);
-        for i in 0..num_chunks {
-            let file_path = format!("{}_chunk_{}.dat", base_file_path, i);
-            let chunk = Chunk::new(file_path, chunk_size)?;
+        for _i in 0..num_chunks {
+            let chunk = Chunk::new(chunk_size)?;
             chunks.push(Arc::new(chunk));
         }
         Ok(Self {
@@ -182,7 +161,6 @@ struct ShardState {
 
 impl ShardState {
     fn new(
-        physical_path: String,
         date_str: String,
         shard_idx: u32,
         current_bytes: u64,
@@ -193,7 +171,7 @@ impl ShardState {
             shard_idx,
             current_bytes,
             data_file,
-            ring_buffer: RingBuffer::new(4, 1024 * 1024 * 200, &physical_path)?, // 4 chunks, 200MB each
+            ring_buffer: RingBuffer::new(4, 1024 * 1024 * 200)?, // 4 chunks, 200MB each
         })
     }
 
@@ -487,7 +465,7 @@ async fn write_sharded(
                 );
                 shards.insert(
                     req.path.clone(),
-                    ShardState::new(physical, new_date, new_idx, current_bytes, data_file)?,
+                    ShardState::new(new_date, new_idx, current_bytes, data_file)?,
                 );
             }
             Err(error) => {
