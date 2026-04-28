@@ -326,6 +326,24 @@ impl AsyncRollbackWriter {
                                 }
                             }
                         }
+                        DataKind::Liquidation(liquidation) => {
+                            let payload = serde_json::json!({
+                                "time": now,
+                                "instrument": event.instrument,
+                                "symbol": symbol,
+                                "exchange": event.exchange,
+                                "kind": "liquidation",
+                                "data": liquidation,
+                            });
+                            let req = WriteRequest {
+                                path: format!("{}/liquidations.jsonl", output_dir),
+                                line: Bytes::from(serde_json::to_vec(&payload).unwrap_or_default()),
+                            };
+                            if let Err(e) = write_sharded(&req, &mut shards, max_shard_bytes).await
+                            {
+                                warn!("Failed to write liquidation event: {:?}", e);
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -385,6 +403,24 @@ impl AsyncRollbackWriter {
                                 {
                                     warn!("Failed to write candle event: {:?}", e);
                                 }
+                            }
+                        }
+                        DataKind::Liquidation(liquidation) => {
+                            let payload = serde_json::json!({
+                                "time": now,
+                                "instrument": event.instrument,
+                                "symbol": symbol,
+                                "exchange": event.exchange,
+                                "kind": "liquidation",
+                                "data": liquidation,
+                            });
+                            let req = WriteRequest {
+                                path: format!("{}/liquidations.jsonl", output_dir),
+                                line: Bytes::from(serde_json::to_vec(&payload).unwrap_or_default()),
+                            };
+                            if let Err(e) = write_sharded(&req, &mut shards, max_shard_bytes).await
+                            {
+                                warn!("Failed to write liquidation event: {:?}", e);
                             }
                         }
                         _ => {}
