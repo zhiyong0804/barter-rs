@@ -107,6 +107,16 @@ where
     >;
 }
 
+impl<Instrument> StreamSelector<Instrument, Liquidations> for BinanceFuturesUsdMarket
+where
+    Instrument: InstrumentData,
+{
+    type SnapFetcher = NoInitialSnapshots;
+    type Stream = BinanceWsStream<
+        StatelessTransformer<Self, Instrument::Key, Liquidations, BinanceLiquidation>,
+    >;
+}
+
 impl<Instrument> StreamSelector<Instrument, MarkPrices> for BinanceFuturesUsd
 where
     Instrument: InstrumentData,

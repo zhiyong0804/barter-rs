@@ -4,7 +4,7 @@ use barter_data::{
     streams::reconnect,
     streams::{consumer::MarketStreamResult, reconnect::stream::ReconnectingStream, Streams},
     subscription::{
-        book::OrderBooksL1, candle_1h::Candles1h, candle_1m::Candles1m, trade::PublicTrades,
+        book::OrderBooksL1, candle_1h::Candles1h, candle_1m::Candles1m, liquidation::Liquidations, trade::PublicTrades,
     },
 };
 use barter_instrument::instrument::market_data::kind::MarketDataInstrumentKind;
@@ -89,6 +89,20 @@ impl FutureQuotation {
                 })
                 .collect::<Vec<_>>();
 
+            let liquidation_subs = group
+                .iter()
+                .map(|item| {
+                    (
+                        format!("{}|liquidations", item.symbol),
+                        BinanceFuturesUsdMarket::default(),
+                        item.base.clone(),
+                        item.quote.clone(),
+                        MarketDataInstrumentKind::Perpetual,
+                        Liquidations,
+                    )
+                })
+                .collect::<Vec<_>>();
+
             let candle_1h_subs = group
                 .iter()
                 .map(|item| {
@@ -121,6 +135,7 @@ impl FutureQuotation {
                 .add(Streams::<PublicTrades>::builder().subscribe(trade_subs))
                 .add(Streams::<Candles1m>::builder().subscribe(candle_1m_subs))
                 .add(Streams::<Candles1h>::builder().subscribe(candle_1h_subs))
+                .add(Streams::<Liquidations>::builder().subscribe(liquidation_subs))
                 .add(Streams::<OrderBooksL1>::builder().subscribe(l1_subs));
         }
 
@@ -171,6 +186,21 @@ impl FutureQuotation {
                                             instrument = %event.instrument,
                                             error = ?e,
                                             "Failed to write trade event to file"
+                                        );
+                                    }
+                                }
+
+                                // Handle Liquidation events
+                                if let DataKind::Liquidation(_) = event.kind {
+                                    tracing::info!(
+                                        instrument = %event.instrument,
+                                        "Received liquidation event"
+                                    );
+                                    if let Err(e) = writer.write_market_event(event.clone()) {
+                                        tracing::error!(
+                                            instrument = %event.instrument,
+                                            error = ?e,
+                                            "Failed to write liquidation event to file"
                                         );
                                     }
                                 }

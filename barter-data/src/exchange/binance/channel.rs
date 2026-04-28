@@ -1,4 +1,4 @@
-use super::{Binance, futures::BinanceFuturesUsd};
+use super::{Binance, futures::{BinanceFuturesUsd, BinanceServerFuturesUsdMarket, BinanceServerFuturesUsdPublic}};
 use crate::{
     Identifier,
     subscription::{
@@ -119,6 +119,22 @@ impl<Instrument> Identifier<BinanceChannel>
 {
     fn id(&self) -> BinanceChannel {
         BinanceChannel::MARK_PRICE
+    }
+}
+
+impl<Instrument> Identifier<BinanceChannel>
+    for Subscription<Binance<BinanceServerFuturesUsdMarket>, Instrument, Liquidations>
+{
+    fn id(&self) -> BinanceChannel {
+        BinanceChannel::LIQUIDATIONS
+    }
+}
+
+impl<Instrument> Identifier<BinanceChannel>
+    for Subscription<Binance<BinanceServerFuturesUsdPublic>, Instrument, Liquidations>
+{
+    fn id(&self) -> BinanceChannel {
+        BinanceChannel::LIQUIDATIONS
     }
 }
 
