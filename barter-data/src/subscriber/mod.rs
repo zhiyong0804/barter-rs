@@ -85,10 +85,10 @@ impl Subscriber for WebSocketSubscriber {
         // Send Subscriptions over WebSocket
         for subscription in ws_subscriptions {
             debug!(%exchange, payload = ?subscription, "sending exchange subscription");
-            websocket
-                .send(subscription)
-                .await
-                .map_err(|error| SocketError::WebSocket(Box::new(error)))?;
+            websocket.send(subscription).await.map_err(|error| {
+                tracing::error!(?error, "failed to establish WebSocket connection");
+                SocketError::WebSocket(Box::new(error))
+            })?;
         }
 
         // Validate Subscription responses
@@ -107,3 +107,4 @@ impl Subscriber for WebSocketSubscriber {
         })
     }
 }
+

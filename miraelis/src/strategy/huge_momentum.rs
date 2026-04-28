@@ -540,10 +540,11 @@ impl StrategyModule for HugeMomentumSignalModule {
             return;
         }
 
-        let now = Self::now_seconds();
-        if self.last_check_second > 0 && now < self.last_check_second + 60 {
+        if !candle.is_final {
             return;
         }
+
+        let now = Self::now_seconds();
         self.last_check_second = now;
 
         let Some(tw) = ctx.trades.get(&candle.symbol) else {

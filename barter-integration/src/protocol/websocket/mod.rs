@@ -73,14 +73,23 @@ where
     fn parse(input: Result<Self::Message, Self::Error>) -> Option<Result<Output, SocketError>> {
         match input {
             Ok(ws_message) => match ws_message {
-                WsMessage::Text(text) => process_text(text),
-                WsMessage::Binary(binary) => process_binary(binary),
+                WsMessage::Text(text) => {
+                    tracing::trace!(payload = ?text, "Received Text WebSocket message");
+                    process_text(text)
+                }
+                WsMessage::Binary(binary) => {
+                    tracing::trace!(payload = ?binary, "Received Binary WebSocket message");
+                    process_binary(binary)
+                }
                 WsMessage::Ping(ping) => process_ping(ping),
                 WsMessage::Pong(pong) => process_pong(pong),
                 WsMessage::Close(close_frame) => process_close_frame(close_frame),
                 WsMessage::Frame(frame) => process_frame(frame),
             },
-            Err(ws_err) => Some(Err(SocketError::WebSocket(Box::new(ws_err)))),
+            Err(ws_err) => {
+                tracing::error!(?ws_err, "stream parser parse failed");
+                return Some(Err(SocketError::WebSocket(Box::new(ws_err))));
+            }
         }
     }
 }
@@ -118,7 +127,10 @@ where
                 WsMessage::Close(close_frame) => process_close_frame::<Output>(close_frame),
                 WsMessage::Frame(frame) => process_frame::<Output>(frame),
             },
-            Err(ws_err) => Some(Err(SocketError::WebSocket(Box::new(ws_err)))),
+            Err(ws_err) => {
+                tracing::error!(?ws_err, "protobuf parser parse failed");
+                return Some(Err(SocketError::WebSocket(Box::new(ws_err))));
+            }
         }
     }
 }
@@ -130,20 +142,23 @@ pub fn process_text<ExchangeMessage>(
 where
     ExchangeMessage: for<'de> Deserialize<'de>,
 {
-    Some(
-        serde_json::from_str::<ExchangeMessage>(&payload).map_err(|error| {
-            debug!(
+    match serde_json::from_str::<ExchangeMessage>(&payload) {
+        Ok(exchange_message) => {
+            tracing::trace!(?payload, "Successfully deserialized Text WebSocket message");
+            Some(Ok(exchange_message))
+        }
+        Err(error) => {
+            tracing::warn!(
                 ?error,
                 ?payload,
-                action = "returning Some(Err(err))",
                 "failed to deserialize WebSocket Message into domain specific Message"
             );
-            SocketError::Deserialise {
+            Some(Err(SocketError::Deserialise {
                 error,
                 payload: payload.to_string(),
-            }
-        }),
-    )
+            }))
+        }
+    }
 }
 
 /// Process a payload of `Vec<u8>` bytes by deserialising into an `ExchangeMessage`.
@@ -153,20 +168,28 @@ pub fn process_binary<ExchangeMessage>(
 where
     ExchangeMessage: for<'de> Deserialize<'de>,
 {
-    Some(
-        serde_json::from_slice::<ExchangeMessage>(&payload).map_err(|error| {
-            debug!(
+    match serde_json::from_slice::<ExchangeMessage>(&payload) {
+        Ok(exchange_message) => {
+            tracing::trace!(
+                ?payload,
+                "Successfully deserialized Binary WebSocket message"
+            );
+            Some(Ok(exchange_message))
+        }
+        Err(error) => {
+            let payload_str = String::from_utf8(payload.to_vec()).unwrap_or_else(|x| x.to_string());
+            tracing::error!(
                 ?error,
                 ?payload,
                 action = "returning Some(Err(err))",
                 "failed to deserialize WebSocket Message into domain specific Message"
             );
-            SocketError::Deserialise {
+            Some(Err(SocketError::Deserialise {
                 error,
-                payload: String::from_utf8(payload.into()).unwrap_or_else(|x| x.to_string()),
-            }
-        }),
-    )
+                payload: payload_str,
+            }))
+        }
+    }
 }
 
 /// Basic process for a [`WebSocket`] ping message. Logs the payload at `trace` level.
@@ -202,13 +225,22 @@ pub fn process_frame<ExchangeMessage>(
 /// Connect asynchronously to a [`WebSocket`] server.
 pub async fn connect<R>(request: R) -> Result<WebSocket, SocketError>
 where
-    R: IntoClientRequest + Unpin + Debug,
+    R: IntoClientRequest + Unpin + Debug + Clone,
 {
     debug!(?request, "attempting to establish WebSocket connection");
+
+    let request_clone = request.clone();
     connect_async(request)
         .await
         .map(|(websocket, _)| websocket)
-        .map_err(|error| SocketError::WebSocket(Box::new(error)))
+        .map_err(|error| {
+            tracing::error!(
+                ?error,
+                ?request_clone,
+                "failed to establish WebSocket connection"
+            );
+            SocketError::WebSocket(Box::new(error))
+        })
 }
 
 /// Determine whether a [`WsError`] indicates the [`WebSocket`] has disconnected.
@@ -279,3 +311,4 @@ mod tests {
         assert!(matches!(result, Message::Admin(AdminWs::WsError(_))));
     }
 }
+

@@ -1,6 +1,6 @@
 use barter_data::{
     event::DataKind,
-    exchange::binance::futures::BinanceFuturesUsd,
+    exchange::binance::futures::{BinanceFuturesUsd, BinanceFuturesUsdPublic, BinanceFuturesUsdMarket},
     streams::reconnect,
     streams::{consumer::MarketStreamResult, reconnect::stream::ReconnectingStream, Streams},
     subscription::{
@@ -9,12 +9,13 @@ use barter_data::{
 };
 use barter_instrument::instrument::market_data::kind::MarketDataInstrumentKind;
 use futures_util::StreamExt;
+use std::sync::Arc;
 use tokio::{
     sync::mpsc::UnboundedReceiver,
     time::{interval, Duration},
 };
 use tracing::{info, warn};
-use std::sync::Arc;
+
 use crate::signal::{SignalType, TelegramNotifier};
 use crate::strategy::frame::OrderResponse;
 use crate::strategy::{MarketEvent, StrategyEngine};
@@ -48,7 +49,7 @@ impl FutureQuotation {
         ));
         debug_interval.tick().await;
 
-        let route_count = if subscribe_all { 8 } else { 1 };
+        let route_count = if subscribe_all { 16 } else { 1 };
         let symbol_groups = split_symbols_into_routes(&symbols, route_count);
 
         info!(
@@ -65,7 +66,7 @@ impl FutureQuotation {
                 .map(|item| {
                     (
                         format!("{}|trade", item.symbol),
-                        BinanceFuturesUsd::default(),
+                        BinanceFuturesUsdMarket::default(),
                         item.base.clone(),
                         item.quote.clone(),
                         MarketDataInstrumentKind::Perpetual,
@@ -79,7 +80,7 @@ impl FutureQuotation {
                 .map(|item| {
                     (
                         format!("{}|kline_1m", item.symbol),
-                        BinanceFuturesUsd::default(),
+                        BinanceFuturesUsdMarket::default(),
                         item.base.clone(),
                         item.quote.clone(),
                         MarketDataInstrumentKind::Perpetual,
@@ -93,7 +94,7 @@ impl FutureQuotation {
                 .map(|item| {
                     (
                         format!("{}|kline_1h", item.symbol),
-                        BinanceFuturesUsd::default(),
+                        BinanceFuturesUsdMarket::default(),
                         item.base.clone(),
                         item.quote.clone(),
                         MarketDataInstrumentKind::Perpetual,
@@ -107,7 +108,7 @@ impl FutureQuotation {
                 .map(|item| {
                     (
                         format!("{}|book_ticker", item.symbol),
-                        BinanceFuturesUsd::default(),
+                        BinanceFuturesUsdMarket::default(),
                         item.base.clone(),
                         item.quote.clone(),
                         MarketDataInstrumentKind::Perpetual,
@@ -156,6 +157,24 @@ impl FutureQuotation {
                                 }
                             }
                             reconnect::Event::Item(event) => {
+                                // Log every incoming market event
+                                tracing::trace!(
+                                    instrument = %event.instrument,
+                                    kind = ?event.kind,
+                                    "Received market event"
+                                );
+
+                                // Handle Trade events
+                                if let DataKind::Trade(_) = event.kind {
+                                    if let Err(e) = writer.write_market_event(event.clone()) {
+                                        tracing::error!(
+                                            instrument = %event.instrument,
+                                            error = ?e,
+                                            "Failed to write trade event to file"
+                                        );
+                                    }
+                                }
+
                                 // Add logging for K-line events
                                 if let DataKind::Candle(ref candle) = event.kind {
                                     let symbol = extract_symbol(&event.instrument);
@@ -178,7 +197,13 @@ impl FutureQuotation {
                                     }
 
                                     if candle.is_final {
-                                        writer.write_market_event(event.clone())?;
+                                        if let Err(e) = writer.write_market_event(event.clone()) {
+                                            tracing::error!(
+                                                instrument = %event.instrument,
+                                                error = ?e,
+                                                "Failed to write final kline event to file"
+                                            );
+                                        }
                                     }
                                 }
 
@@ -216,6 +241,24 @@ impl FutureQuotation {
                                 }
                             }
                             reconnect::Event::Item(event) => {
+                                // Log every incoming market event
+                                tracing::trace!(
+                                    instrument = %event.instrument,
+                                    kind = ?event.kind,
+                                    "Received market event"
+                                );
+
+                                // Handle Trade events
+                                if let DataKind::Trade(_) = event.kind {
+                                    if let Err(e) = writer.write_market_event(event.clone()) {
+                                        tracing::error!(
+                                            instrument = %event.instrument,
+                                            error = ?e,
+                                            "Failed to write trade event to file"
+                                        );
+                                    }
+                                }
+
                                 // Add logging for K-line events
                                 if let DataKind::Candle(ref candle) = event.kind {
                                     let symbol = extract_symbol(&event.instrument);
@@ -238,7 +281,13 @@ impl FutureQuotation {
                                     }
 
                                     if candle.is_final {
-                                        writer.write_market_event(event.clone())?;
+                                        if let Err(e) = writer.write_market_event(event.clone()) {
+                                            tracing::error!(
+                                                instrument = %event.instrument,
+                                                error = ?e,
+                                                "Failed to write final kline event to file"
+                                            );
+                                        }
                                     }
                                 }
 
@@ -319,8 +368,8 @@ impl FutureQuotation {
                         continue;
                     }
                 };
-                let status = resp.status();
                 // tracing::debug!("fetch_klines return: {:#?}", resp);
+                let status = resp.status();
                 if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.as_u16() == 418 {
                     let wait = resp
                         .headers()
@@ -585,8 +634,15 @@ fn apply_event_to_strategy_context(
         DataKind::Candle(candle) => {
             let interval = if event.instrument.ends_with("|kline_1h") {
                 UhfKlineInterval::H1
-            } else {
+            } else if event.instrument.ends_with("|kline_1m") {
                 UhfKlineInterval::M1
+            } else {
+                // Unknown interval, skip processing
+                tracing::warn!(
+                    instrument = %event.instrument,
+                    "Unknown candle interval, skipping processing"
+                );
+                return;
             };
 
             let close_ms = candle.close_time.timestamp_millis().max(0) as u64;

@@ -34,8 +34,24 @@ pub mod mark_price;
 /// See docs: <https://binance-docs.github.io/apidocs/futures/en/#websocket-market-streams>
 pub const WEBSOCKET_BASE_URL_BINANCE_FUTURES_USD: &str = "wss://fstream.binance.com/ws";
 
+/// [`BinanceFuturesUsd`] WebSocket server base url for public streams.
+///
+/// See docs: <https://binance-docs.github.io/apidocs/futures/en/#websocket-market-streams>
+pub const WEBSOCKET_BASE_URL_BINANCE_FUTURES_PUBLIC: &str = "wss://fstream.binance.com/public/ws";
+
+/// [`BinanceFuturesUsd`] WebSocket server base url for market streams.
+///
+/// See docs: <https://binance-docs.github.io/apidocs/futures/en/#websocket-market-streams>
+pub const WEBSOCKET_BASE_URL_BINANCE_FUTURES_MARKET: &str = "wss://fstream.binance.com/market/ws";
+
 /// [`Binance`] perpetual usd exchange.
 pub type BinanceFuturesUsd = Binance<BinanceServerFuturesUsd>;
+
+/// [`Binance`] perpetual usd exchange for public streams.
+pub type BinanceFuturesUsdPublic = Binance<BinanceServerFuturesUsdPublic>;
+
+/// [`Binance`] perpetual usd exchange for market streams.
+pub type BinanceFuturesUsdMarket = Binance<BinanceServerFuturesUsdMarket>;
 
 /// [`Binance`] perpetual usd [`ExchangeServer`].
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
@@ -46,6 +62,30 @@ impl ExchangeServer for BinanceServerFuturesUsd {
 
     fn websocket_url() -> &'static str {
         WEBSOCKET_BASE_URL_BINANCE_FUTURES_USD
+    }
+}
+
+/// [`Binance`] perpetual usd [`ExchangeServer`] for public streams.
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
+pub struct BinanceServerFuturesUsdPublic;
+
+impl ExchangeServer for BinanceServerFuturesUsdPublic {
+    const ID: ExchangeId = ExchangeId::BinanceFuturesUsd; // Reuse ID
+
+    fn websocket_url() -> &'static str {
+        WEBSOCKET_BASE_URL_BINANCE_FUTURES_PUBLIC
+    }
+}
+
+/// [`Binance`] perpetual usd [`ExchangeServer`] for market streams.
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
+pub struct BinanceServerFuturesUsdMarket;
+
+impl ExchangeServer for BinanceServerFuturesUsdMarket {
+    const ID: ExchangeId = ExchangeId::BinanceFuturesUsd; // Reuse ID
+
+    fn websocket_url() -> &'static str {
+        WEBSOCKET_BASE_URL_BINANCE_FUTURES_MARKET
     }
 }
 
