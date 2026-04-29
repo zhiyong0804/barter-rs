@@ -1152,23 +1152,12 @@ impl UhfTradeWindow {
         }
     }
 
-    pub fn get_target_closed_minute_price_qty(
-        &self,
-        idx: i32,
-        now_sec: u64,
-    ) -> TradeWindowPriceQty {
+    pub fn get_target_closed_minute_price_qty(&self, idx: i32) -> TradeWindowPriceQty {
         if self.minutes_window.items.is_empty() || idx > 0 {
             return TradeWindowPriceQty::default();
         }
 
-        let mut shift = 0;
-        if let Some(current) = self.minutes_window.items.back() {
-            if current.second > 0 && now_sec > 0 && (current.second / 60) == (now_sec / 60) {
-                shift = 1;
-            }
-        }
-
-        self.get_target_minute_price_qty(idx - shift)
+        self.get_target_minute_price_qty(idx)
     }
 
     pub fn get_latest_60_minutes_qty(&self) -> f64 {
@@ -1267,3 +1256,4 @@ impl UhfTradeWindow {
         }
     }
 }
+

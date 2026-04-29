@@ -233,22 +233,12 @@ impl HugeMomentumSignalModule {
         bars
     }
 
-    pub fn check(
-        &mut self,
-        symbol: &str,
-        tw: &UhfTradeWindow,
-        current: u64,
-    ) -> Option<HugeMomentumSignal> {
-        // if current < self.cfg.started_timestamp + 120 {
-        //     return None;
-        // }
-
+    pub fn check(&mut self, symbol: &str, tw: &UhfTradeWindow) -> Option<HugeMomentumSignal> {
         if !Self::precheck_trade_window(tw, self.cfg.required_minutes) {
             tracing::trace!(
                 strategy = self.name(),
                 strategy_id = self.id(),
                 symbol,
-                current,
                 minutes_len = tw.minutes_window.items.len(),
                 required_minutes = self.cfg.required_minutes,
                 "huge momentum check precheck_trade_window failed"
@@ -256,12 +246,11 @@ impl HugeMomentumSignalModule {
             return None;
         }
 
-        let Some(recent_minutes) = Self::collect_recent_minutes(tw, current) else {
+        let Some(recent_minutes) = Self::collect_recent_minutes(tw) else {
             tracing::trace!(
                 strategy = self.name(),
                 strategy_id = self.id(),
                 symbol,
-                current,
                 minutes_len = tw.minutes_window.items.len(),
                 "huge momentum check collect_recent_minutes failed"
             );
@@ -272,7 +261,6 @@ impl HugeMomentumSignalModule {
                 strategy = self.name(),
                 strategy_id = self.id(),
                 symbol,
-                current,
                 recent_minutes_len = recent_minutes.len(),
                 "huge momentum check not enough recent minutes"
             );
@@ -286,7 +274,6 @@ impl HugeMomentumSignalModule {
                 strategy = self.name(),
                 strategy_id = self.id(),
                 symbol,
-                current,
                 recent_5m_len = recent_5m.len(),
                 "huge momentum check not enough recent 5m bars"
             );
@@ -299,18 +286,16 @@ impl HugeMomentumSignalModule {
                 strategy = self.name(),
                 strategy_id = self.id(),
                 symbol,
-                current,
                 minutes_len = tw.minutes_window.items.len(),
                 "huge momentum check not enough minutes for vol_base"
             );
             return None;
         }
-        let Some(vol_base) = Self::compute_vol_base(tw, current, 15, vol_base_range_end) else {
+        let Some(vol_base) = Self::compute_vol_base(tw, 15, vol_base_range_end) else {
             tracing::trace!(
                 strategy = self.name(),
                 strategy_id = self.id(),
                 symbol,
-                current,
                 minutes_len = tw.minutes_window.items.len(),
                 "huge momentum check compute_vol_base failed"
             );
@@ -329,14 +314,14 @@ impl HugeMomentumSignalModule {
         let q3 = b3.qty;
         let qsum = q1 + q2 + q3;
 
-        let threshold_each_5m = vol_base * self.cfg.qty_5m_total_multiple;
-        let threshold_total_15m = vol_base * self.cfg.qty_15m_times_threshold;
+        let threshold_each_5m = vol_base * self.cfg.qty_5m_total_multiple * 5.0;
+        let threshold_total_15m = vol_base * self.cfg.qty_15m_times_threshold * 5.0;
         let three_5m_valid = q1 >= threshold_each_5m
             && q2 >= threshold_each_5m
             && q3 >= threshold_each_5m
             && qsum >= threshold_total_15m;
 
-        let recent_105m_high = Self::compute_recent_105m_high(tw, current, 15, vol_base_range_end);
+        let recent_105m_high = Self::compute_recent_105m_high(tw, 15, vol_base_range_end);
         let up_break_105m_high = recent_105m_high > 0.0 && latest_minute.close > recent_105m_high;
         let price_15m_valid = price_15m_change >= self.cfg.price_15m_change_threshold;
         let ignite_triggered = three_5m_valid && up_break_105m_high && price_15m_valid;
@@ -434,13 +419,10 @@ impl HugeMomentumSignalModule {
         tw.minutes_window.items.len() >= required_minutes
     }
 
-    fn collect_recent_minutes(
-        tw: &UhfTradeWindow,
-        current: u64,
-    ) -> Option<Vec<TradeWindowPriceQty>> {
+    fn collect_recent_minutes(tw: &UhfTradeWindow) -> Option<Vec<TradeWindowPriceQty>> {
         let mut recent = Vec::with_capacity(15);
         for i in (1..=15).rev() {
-            let item = tw.get_target_closed_minute_price_qty(-(i as i32), current);
+            let item = tw.get_target_closed_minute_price_qty(-(i as i32));
             if !Self::valid_kline(&item) || item.qty <= 0.0 || !item.qty.is_finite() {
                 return None;
             }
@@ -449,16 +431,11 @@ impl HugeMomentumSignalModule {
         Some(recent)
     }
 
-    fn compute_vol_base(
-        tw: &UhfTradeWindow,
-        current: u64,
-        start: usize,
-        end: usize,
-    ) -> Option<f64> {
+    fn compute_vol_base(tw: &UhfTradeWindow, start: usize, end: usize) -> Option<f64> {
         let mut sum = 0.0;
         let mut count = 0_usize;
         for i in start..=end {
-            let item = tw.get_target_closed_minute_price_qty(-(i as i32), current);
+            let item = tw.get_target_closed_minute_price_qty(-(i as i32));
             if !Self::valid_kline(&item) || item.qty <= 0.0 || !item.qty.is_finite() {
                 continue;
             }
@@ -475,15 +452,10 @@ impl HugeMomentumSignalModule {
         Some(vol_base)
     }
 
-    fn compute_recent_105m_high(
-        tw: &UhfTradeWindow,
-        current: u64,
-        start: usize,
-        end: usize,
-    ) -> f64 {
+    fn compute_recent_105m_high(tw: &UhfTradeWindow, start: usize, end: usize) -> f64 {
         let mut high = 0.0_f64;
         for i in start..=end {
-            let item = tw.get_target_closed_minute_price_qty(-(i as i32), current);
+            let item = tw.get_target_closed_minute_price_qty(-(i as i32));
             if !Self::valid_kline(&item) {
                 continue;
             }
@@ -544,14 +516,11 @@ impl StrategyModule for HugeMomentumSignalModule {
             return;
         }
 
-        let now = Self::now_seconds();
-        self.last_check_second = now;
-
         let Some(tw) = ctx.trades.get(&candle.symbol) else {
             return;
         };
 
-        if let Some(signal) = self.check(&candle.symbol, tw, now) {
+        if let Some(signal) = self.check(&candle.symbol, tw) {
             tracing::info!(
                 strategy = self.name(),
                 strategy_id = self.id(),
@@ -733,9 +702,8 @@ mod tests {
         for row in &rows_1m {
             trade_window.update_kline(build_kline(symbol, UhfKlineInterval::M1, row));
 
-            let current = row.start_timestamp / 1000 + 60;
             check_calls += 1;
-            if module.check(symbol, &trade_window, current).is_some() {
+            if module.check(symbol, &trade_window).is_some() {
                 signal_hits += 1;
             }
         }
