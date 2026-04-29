@@ -1,10 +1,16 @@
 use barter_data::{
     event::DataKind,
-    exchange::binance::futures::{BinanceFuturesUsd, BinanceFuturesUsdPublic, BinanceFuturesUsdMarket},
-    streams::reconnect,
-    streams::{consumer::MarketStreamResult, reconnect::stream::ReconnectingStream, Streams},
+    exchange::binance::futures::{
+        BinanceFuturesUsd, BinanceFuturesUsdMarket, BinanceFuturesUsdPublic,
+    },
+    streams::{
+        consumer::MarketStreamResult,
+        reconnect::{self, stream::ReconnectingStream},
+        Streams,
+    },
     subscription::{
-        book::OrderBooksL1, candle_1h::Candles1h, candle_1m::Candles1m, liquidation::Liquidations, trade::PublicTrades,
+        book::OrderBooksL1, candle_1h::Candles1h, candle_1m::Candles1m, liquidation::Liquidations,
+        trade::PublicTrades,
     },
 };
 use barter_instrument::instrument::market_data::kind::MarketDataInstrumentKind;
@@ -89,20 +95,6 @@ impl FutureQuotation {
                 })
                 .collect::<Vec<_>>();
 
-            let liquidation_subs = group
-                .iter()
-                .map(|item| {
-                    (
-                        format!("{}|liquidations", item.symbol),
-                        BinanceFuturesUsdMarket::default(),
-                        item.base.clone(),
-                        item.quote.clone(),
-                        MarketDataInstrumentKind::Perpetual,
-                        Liquidations,
-                    )
-                })
-                .collect::<Vec<_>>();
-
             let candle_1h_subs = group
                 .iter()
                 .map(|item| {
@@ -113,6 +105,20 @@ impl FutureQuotation {
                         item.quote.clone(),
                         MarketDataInstrumentKind::Perpetual,
                         Candles1h,
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            let liquidation_subs = group
+                .iter()
+                .map(|item| {
+                    (
+                        format!("{}|liquidations", item.symbol),
+                        BinanceFuturesUsdMarket::default(),
+                        item.base.clone(),
+                        item.quote.clone(),
+                        MarketDataInstrumentKind::Perpetual,
+                        Liquidations,
                     )
                 })
                 .collect::<Vec<_>>();
@@ -285,6 +291,21 @@ impl FutureQuotation {
                                             instrument = %event.instrument,
                                             error = ?e,
                                             "Failed to write trade event to file"
+                                        );
+                                    }
+                                }
+
+                                // Handle Liquidation events
+                                if let DataKind::Liquidation(_) = event.kind {
+                                    tracing::info!(
+                                        instrument = %event.instrument,
+                                        "Received liquidation event"
+                                    );
+                                    if let Err(e) = writer.write_market_event(event.clone()) {
+                                        tracing::error!(
+                                            instrument = %event.instrument,
+                                            error = ?e,
+                                            "Failed to write liquidation event to file"
                                         );
                                     }
                                 }
@@ -650,16 +671,17 @@ fn apply_event_to_strategy_context(
         DataKind::Trade(trade) => {
             let event_ms = event.time_exchange.timestamp_millis().max(0) as u64;
             let trade_id = trade.id.parse::<u64>().unwrap_or(0);
-            engine.dispatch(MarketEvent::Trade(TradeItem {
+            let item = TradeItem {
                 id: trade_id,
-                symbol,
+                symbol: symbol.clone(),
                 price: trade.price,
                 qty: trade.amount,
                 second: event_ms / 1000,
                 event_time: event_ms,
                 transact_time: event_ms,
                 is_buyer_maker: matches!(trade.side, barter_instrument::Side::Sell),
-            }));
+            };
+            engine.dispatch(MarketEvent::Trade(item));
         }
         DataKind::Candle(candle) => {
             let interval = if event.instrument.ends_with("|kline_1h") {
@@ -718,26 +740,8 @@ fn apply_event_to_strategy_context(
 
             match interval {
                 UhfKlineInterval::M1 => engine.dispatch(MarketEvent::Candle1m(kline.clone())),
-                UhfKlineInterval::H1 => {
-                    let window = engine
-                        .ctx
-                        .trades
-                        .entry(kline.symbol.clone())
-                        .or_insert_with(|| UhfTradeWindow::new(kline.symbol.clone()));
-                    window.update_kline(kline.clone());
-                }
+                UhfKlineInterval::H1 => engine.dispatch(MarketEvent::Candle1h(kline.clone())),
             }
-
-            let ticker = QuotationTicker {
-                symbol: extract_symbol(&event.instrument),
-                event_time: close_ms,
-                tf_open_price: candle.open,
-                tf_high_price: candle.high,
-                tf_low_price: candle.low,
-                tf_total_qty: candle.volume,
-                tf_total_value: candle.volume * candle.close,
-            };
-            engine.dispatch(MarketEvent::Ticker(ticker));
         }
         DataKind::OrderBookL1(l1) => {
             let event_ms = event.time_exchange.timestamp_millis().max(0) as u64;

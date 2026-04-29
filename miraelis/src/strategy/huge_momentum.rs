@@ -278,9 +278,24 @@ impl HugeMomentumSignalModule {
                 "huge momentum check not enough recent 5m bars"
             );
             return None;
+        } else {
+        
+           for (i, item) in recent_minutes.iter().enumerate().rev() {
+                tracing::trace!(
+                    "T({}): price={}, qty={}, open={}, close={}, high={}, low={}, second={}",
+                    i,
+                    item.price,
+                    item.qty,
+                    item.open,
+                    item.close,
+                    item.high,
+                    item.low,
+                    item.second
+                );
+            }
         }
 
-        let vol_base_range_end = 120_usize.min(tw.minutes_window.items.len().saturating_sub(1));
+        let vol_base_range_end = 120_usize.min(tw.minutes_window.items.len());
         if vol_base_range_end < 15 {
             tracing::trace!(
                 strategy = self.name(),
@@ -291,7 +306,7 @@ impl HugeMomentumSignalModule {
             );
             return None;
         }
-        let Some(vol_base) = Self::compute_vol_base(tw, 15, vol_base_range_end) else {
+        let Some(vol_base) = Self::compute_vol_base(tw, 16, vol_base_range_end) else {
             tracing::trace!(
                 strategy = self.name(),
                 strategy_id = self.id(),
@@ -436,15 +451,17 @@ impl HugeMomentumSignalModule {
         let mut count = 0_usize;
         for i in start..=end {
             let item = tw.get_target_closed_minute_price_qty(-(i as i32));
+            tracing::trace!("compute_vol_base i={} item={:#?} end={}", i, item.clone(), end);
+            count += 1;
             if !Self::valid_kline(&item) || item.qty <= 0.0 || !item.qty.is_finite() {
                 continue;
             }
             sum += item.qty;
-            count += 1;
         }
         if count < 30 {
             return None;
         }
+        count = end - start + 1;
         let vol_base = sum / count as f64;
         if vol_base <= 0.0 || !vol_base.is_finite() {
             return None;
@@ -665,7 +682,7 @@ mod tests {
     fn check_replay_from_1m_and_1h_files() {
         let _tracing_guard = init_test_tracing();
 
-        let symbol = "BASEDUSDT";
+        let symbol = "ALTUSDT";
 
         let mut module = HugeMomentumSignalModule::with_config(HugeMomentumModuleConfig {
             tf_24h_qty_value_threshold: 1_000.0,
@@ -678,8 +695,8 @@ mod tests {
             cooldown_seconds: 45 * 60,
         });
 
-        let rows_1h = load_fixture_rows("basedusdt_1h.candle");
-        let rows_1m = load_fixture_rows("basedusdt_1m.candle");
+        let rows_1h = load_fixture_rows("ALTUSDT.candle_1h");
+        let rows_1m = load_fixture_rows("ALTUSDT.candle_1m");
 
         let first_1m_second = rows_1m
             .first()
@@ -700,8 +717,11 @@ mod tests {
         let mut check_calls = 0usize;
         let mut signal_hits = 0usize;
         for row in &rows_1m {
-            trade_window.update_kline(build_kline(symbol, UhfKlineInterval::M1, row));
 
+            let kline = build_kline(symbol, UhfKlineInterval::M1, row);
+            trade_window.update_kline(kline.clone());
+            tracing::debug!("update kline_1m: {:#?}", kline);
+            
             check_calls += 1;
             if module.check(symbol, &trade_window).is_some() {
                 signal_hits += 1;

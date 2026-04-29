@@ -1133,11 +1133,12 @@ impl UhfTradeWindow {
         }
 
         let len = self.minutes_window.items.len() as i32;
-        if -idx >= len {
+        if -idx > len {
             return TradeWindowPriceQty::default();
         }
 
-        let target = (len - 1 + idx) as usize;
+        let target = (len + idx) as usize;
+
         let item = &self.minutes_window.items[target];
         TradeWindowPriceQty {
             price: item.price,

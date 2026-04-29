@@ -17,6 +17,7 @@ pub enum MarketEvent {
     Trade(TradeItem),
     SpotTrade(TradeItem),
     Candle1m(QuotationKline),
+    Candle1h(QuotationKline),
     BestBidAsk(BestBidAskItem),
     Ticker(QuotationTicker),
     // Order / Depth can be added here as their types are defined
@@ -163,6 +164,15 @@ impl StrategyEngine {
                     .or_insert_with(|| UhfTradeWindow::new(symbol.clone()));
                 window.update_kline(candle.clone());
             }
+            MarketEvent::Candle1h(candle) => {
+                let symbol = candle.symbol.clone();
+                let window = self
+                    .ctx
+                    .trades
+                    .entry(symbol.clone())
+                    .or_insert_with(|| UhfTradeWindow::new(symbol.clone()));
+                window.update_kline(candle.clone());
+            }
             MarketEvent::BestBidAsk(bba) => {
                 let symbol = bba.symbol.clone();
                 let window = self
@@ -192,6 +202,7 @@ impl StrategyEngine {
                 MarketEvent::Candle1m(candle) => m.handle_candle_1m(&mut self.ctx, candle),
                 MarketEvent::BestBidAsk(bba) => m.handle_best_bid_ask(&mut self.ctx, bba),
                 MarketEvent::Ticker(tk) => m.handle_ticker(&mut self.ctx, tk),
+                MarketEvent::Candle1h(_candle) => {}
             }
         }
         self.modules = modules;
