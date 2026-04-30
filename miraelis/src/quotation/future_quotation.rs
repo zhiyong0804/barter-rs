@@ -198,10 +198,6 @@ impl FutureQuotation {
 
                                 // Handle Liquidation events
                                 if let DataKind::Liquidation(_) = event.kind {
-                                    tracing::info!(
-                                        instrument = %event.instrument,
-                                        "Received liquidation event"
-                                    );
                                     if let Err(e) = writer.write_market_event(event.clone()) {
                                         tracing::error!(
                                             instrument = %event.instrument,
@@ -629,11 +625,23 @@ fn dump_trade_window_debug(engine: &StrategyEngine, symbol: Option<&str>) {
 
     match serde_json::to_string_pretty(window) {
         Ok(payload) => {
-            info!(
-                symbol,
-                payload = %payload,
-                "trade_window hourly debug dump"
+            // 生成文件名，包含symbol和当前时间戳
+            let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S_%3f");
+            let filename = format!(
+                "data/market/{}_{}.json",
+                symbol.replace("/", "_"),
+                timestamp
             );
+            // 写入文件
+            if let Err(e) = std::fs::write(&filename, &payload) {
+                warn!(symbol, error = ?e, "Failed to write trade window dump to file");
+            } else {
+                info!(
+                    symbol,
+                    filename = filename,
+                    "trade_window debug dump saved to file"
+                );
+            }
         }
         Err(error) => {
             warn!(
@@ -669,16 +677,15 @@ fn apply_event_to_strategy_context(
 
     match &event.kind {
         DataKind::Trade(trade) => {
-            let event_ms = event.time_exchange.timestamp_millis().max(0) as u64;
             let trade_id = trade.id.parse::<u64>().unwrap_or(0);
             let item = TradeItem {
                 id: trade_id,
                 symbol: symbol.clone(),
                 price: trade.price,
                 qty: trade.amount,
-                second: event_ms / 1000,
-                event_time: event_ms,
-                transact_time: event_ms,
+                second: trade.event_timestamp / 1000,
+                event_time: trade.event_timestamp,
+                transact_time: trade.trade_timestamp,
                 is_buyer_maker: matches!(trade.side, barter_instrument::Side::Sell),
             };
             engine.dispatch(MarketEvent::Trade(item));

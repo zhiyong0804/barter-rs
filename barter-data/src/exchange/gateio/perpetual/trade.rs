@@ -91,6 +91,11 @@ impl<InstrumentKey: Clone> From<(ExchangeId, InstrumentKey, GateioFuturesTrades)
                         } else {
                             Side::Sell
                         },
+                        event_timestamp: 0,
+                        trade_timestamp: 0,
+                        symbol: "".to_string(),
+                        trade_type: None,
+                        time: Utc::now(),
                     },
                 })
             })
@@ -134,3 +139,4 @@ mod tests {
         }
     }
 }
+

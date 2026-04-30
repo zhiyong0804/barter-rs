@@ -53,6 +53,12 @@ use serde::{Deserialize, Serialize};
 /// ```
 #[derive(Clone, PartialEq, PartialOrd, Debug, Deserialize, Serialize)]
 pub struct BinanceTrade {
+    /// 事件类型 (e)
+    #[serde(alias = "e")]
+    pub event_type: String,
+    /// 事件时间戳 (E)
+    #[serde(alias = "E")]
+    pub event_timestamp: u64,
     #[serde(alias = "s", deserialize_with = "de_trade_subscription_id")]
     pub subscription_id: SubscriptionId,
     #[serde(
@@ -74,6 +80,9 @@ pub struct BinanceTrade {
     pub amount: f64,
     #[serde(alias = "m", deserialize_with = "de_side_from_buyer_is_maker")]
     pub side: Side,
+    /// 交易类型 (X) - 可选字段
+    #[serde(alias = "X", default)]
+    pub trade_type: Option<String>,
 }
 
 impl Identifier<Option<SubscriptionId>> for BinanceTrade {
@@ -86,6 +95,9 @@ impl<InstrumentKey> From<(ExchangeId, InstrumentKey, BinanceTrade)>
     for MarketIter<InstrumentKey, PublicTrade>
 {
     fn from((exchange_id, instrument, trade): (ExchangeId, InstrumentKey, BinanceTrade)) -> Self {
+        // 从subscription_id中提取符号
+        let symbol = trade.subscription_id.0.split('|').nth(1).unwrap_or("").to_string();
+        
         Self(vec![Ok(MarketEvent {
             time_exchange: trade.time,
             time_received: Utc::now(),
@@ -96,6 +108,11 @@ impl<InstrumentKey> From<(ExchangeId, InstrumentKey, BinanceTrade)>
                 price: trade.price,
                 amount: trade.amount,
                 side: trade.side,
+                event_timestamp: 0, // BinanceTrade中没有这个字段
+                trade_timestamp: trade.time.timestamp_millis() as u64,
+                symbol: symbol,
+                trade_type: None, // BinanceTrade中没有这个字段
+                time: trade.time,
             },
         })])
     }
@@ -158,6 +175,8 @@ mod tests {
                     }
                     "#,
                     expected: Ok(BinanceTrade {
+                        event_type: "trade".to_string(),
+                        event_timestamp: 1649324825173,
                         subscription_id: SubscriptionId::from("@trade|ETHUSDT"),
                         time: datetime_utc_from_epoch_duration(Duration::from_millis(
                             1749354825200,
@@ -166,6 +185,7 @@ mod tests {
                         price: 10000.19,
                         amount: 0.239000,
                         side: Side::Buy,
+                        trade_type: None,
                     }),
                 },
                 TestCase {
@@ -189,6 +209,8 @@ mod tests {
                     }
                     "#,
                     expected: Ok(BinanceTrade {
+                        event_type: "trade".to_string(),
+                        event_timestamp: 1649839266194,
                         subscription_id: SubscriptionId::from("@trade|ETHUSDT"),
                         time: datetime_utc_from_epoch_duration(Duration::from_millis(
                             1749354825200,
@@ -197,6 +219,7 @@ mod tests {
                         price: 10000.19,
                         amount: 0.239000,
                         side: Side::Sell,
+                        trade_type: Some("MARKET".to_string()),
                     }),
                 },
                 TestCase {
@@ -208,6 +231,8 @@ mod tests {
                     }
                     "#,
                     expected: Ok(BinanceTrade {
+                        event_type: "trade".to_string(),
+                        event_timestamp: 1649839266194,
                         subscription_id: SubscriptionId::from("@trade|ETHUSDT"),
                         time: datetime_utc_from_epoch_duration(Duration::from_millis(
                             1749354825200,
@@ -216,6 +241,7 @@ mod tests {
                         price: 10000.19,
                         amount: 0.239000,
                         side: Side::Buy,
+                        trade_type: Some("LIQUIDATION".to_string()),
                     }),
                 },
                 TestCase {
@@ -225,6 +251,8 @@ mod tests {
                         "t": 1000000000,"p":"10000.19","q":"0.239000","X": "INSURANCE_FUND","m": false
                     }"#,
                     expected: Ok(BinanceTrade {
+                        event_type: "trade".to_string(),
+                        event_timestamp: 1649839266194,
                         subscription_id: SubscriptionId::from("@trade|ETHUSDT"),
                         time: datetime_utc_from_epoch_duration(Duration::from_millis(
                             1749354825200,
@@ -233,6 +261,7 @@ mod tests {
                         price: 10000.19,
                         amount: 0.239000,
                         side: Side::Buy,
+                        trade_type: Some("INSURANCE_FUND".to_string()),
                     }),
                 },
             ];
@@ -257,3 +286,4 @@ mod tests {
         }
     }
 }
+

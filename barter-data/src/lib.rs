@@ -400,6 +400,11 @@ pub mod test_utils {
                 price,
                 amount: quantity,
                 side: Side::Buy,
+                event_timestamp: 0,
+                trade_timestamp: 0,
+                symbol: "".to_string(),
+                trade_type: None,
+                time: Utc::now(),
             }),
         }
     }

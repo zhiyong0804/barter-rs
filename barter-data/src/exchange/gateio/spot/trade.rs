@@ -73,6 +73,11 @@ impl<InstrumentKey> From<(ExchangeId, InstrumentKey, GateioSpotTrade)>
                 price: trade.data.price,
                 amount: trade.data.amount,
                 side: trade.data.side,
+                event_timestamp: 0,
+                trade_timestamp: 0,
+                symbol: "".to_string(),
+                trade_type: None,
+                time: Utc::now(),
             },
         })])
     }
@@ -108,3 +113,4 @@ mod tests {
         }
     }
 }
+

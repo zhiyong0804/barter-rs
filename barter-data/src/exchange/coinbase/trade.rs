@@ -66,6 +66,11 @@ impl<InstrumentKey> From<(ExchangeId, InstrumentKey, CoinbaseTrade)>
                 price: trade.price,
                 amount: trade.amount,
                 side: trade.side,
+                event_timestamp: 0,
+                trade_timestamp: 0,
+                symbol: "".to_string(),
+                trade_type: None,
+                time: Utc::now(),
             },
         })])
     }
@@ -147,3 +152,4 @@ mod tests {
         }
     }
 }
+
