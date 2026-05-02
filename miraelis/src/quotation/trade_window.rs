@@ -504,7 +504,6 @@ impl UhfTradeWindow {
                 self.seconds_window.high = item.high;
                 self.seconds_window.low = item.low;
                 first = false;
-                println!("recompute_seconds_window_fields_after_removal first seconds_window ochl");
             } else {
                 self.seconds_window.close = item.close;
                 self.seconds_window.high = dmax(self.seconds_window.high, item.high);
@@ -1148,8 +1147,6 @@ mod tests {
         window.update(trades[0].clone());
         total_qty += trades[0].qty;
         if let Ok(payload) = serde_json::to_string_pretty(&window) {
-            // println!("update first one trade, window: {}", payload);
-
             assert_eq!(1, window.seconds_window.items.len());
 
             assert_eq!(4.0, window.get_current_second_qty());
