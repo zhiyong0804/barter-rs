@@ -10,7 +10,7 @@ use barter_data::{
     },
     subscription::{
         book::OrderBooksL1, candle_1h::Candles1h, candle_1m::Candles1m, liquidation::Liquidations,
-        trade::PublicTrades,
+        ticker::Tickers24hr, trade::PublicTrades,
     },
 };
 use barter_instrument::instrument::market_data::kind::MarketDataInstrumentKind;
@@ -137,12 +137,27 @@ impl FutureQuotation {
                 })
                 .collect::<Vec<_>>();
 
+            let ticker_subs = group
+                .iter()
+                .map(|item| {
+                    (
+                        format!("{}|ticker", item.symbol),
+                        BinanceFuturesUsdMarket::default(),
+                        item.base.clone(),
+                        item.quote.clone(),
+                        MarketDataInstrumentKind::Perpetual,
+                        Tickers24hr,
+                    )
+                })
+                .collect::<Vec<_>>();
+
             builder = builder
                 .add(Streams::<PublicTrades>::builder().subscribe(trade_subs))
                 .add(Streams::<Candles1m>::builder().subscribe(candle_1m_subs))
                 .add(Streams::<Candles1h>::builder().subscribe(candle_1h_subs))
                 .add(Streams::<Liquidations>::builder().subscribe(liquidation_subs))
-                .add(Streams::<OrderBooksL1>::builder().subscribe(l1_subs));
+                .add(Streams::<OrderBooksL1>::builder().subscribe(l1_subs))
+                .add(Streams::<Tickers24hr>::builder().subscribe(ticker_subs));
         }
 
         let streams: Streams<MarketStreamResult<String, DataKind>> = builder.init().await?;
@@ -779,6 +794,19 @@ fn apply_event_to_strategy_context(
                 event_time: event_ms,
                 transact_time: event_ms,
             }));
+        }
+        DataKind::Ticker(ticker) => {
+            let ticker_item = QuotationTicker {
+                symbol: symbol.clone(),
+                event_time: ticker.event_time.timestamp_millis().max(0) as u64,
+                tf_open_price: ticker.open_price,
+                tf_high_price: ticker.high_price,
+                tf_low_price: ticker.low_price,
+                tf_total_qty: ticker.base_volume,
+                tf_total_value: ticker.quote_volume,
+            };
+
+            engine.dispatch(MarketEvent::Ticker(ticker_item));
         }
         _ => {}
     }

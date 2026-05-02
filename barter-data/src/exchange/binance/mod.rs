@@ -49,6 +49,9 @@ pub mod subscription;
 /// [`BinanceFuturesUsd`](futures::BinanceFuturesUsd).
 pub mod trade;
 
+/// Ticker types for 24hr statistics.
+pub mod binance_ticker;
+
 /// Convenient type alias for a Binance [`ExchangeWsStream`] using [`WebSocketSerdeParser`].
 pub type BinanceWsStream<Transformer> = ExchangeWsStream<WebSocketSerdeParser, Transformer>;
 
@@ -92,7 +95,7 @@ where
             })
             .collect::<Vec<String>>();
 
-         vec![WsMessage::text(
+        vec![WsMessage::text(
             serde_json::json!({
                 "method": "SUBSCRIBE",
                 "params": stream_names,
@@ -186,3 +189,4 @@ where
         serializer.serialize_str(Self::ID.as_str())
     }
 }
+

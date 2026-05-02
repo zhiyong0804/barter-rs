@@ -32,6 +32,9 @@ pub mod liquidation;
 /// Mark price [`SubscriptionKind`] and the associated Barter output data model.
 pub mod mark_price;
 
+/// 24hr Ticker [`SubscriptionKind`] and the associated Barter output data model.
+pub mod ticker;
+
 /// Public trade [`SubscriptionKind`] and the associated Barter output data model.
 pub mod trade;
 
@@ -97,6 +100,7 @@ pub enum SubKind {
     Liquidations,
     Candles,
     MarkPrices,
+    Tickers24hr,
 }
 
 impl<Exchange, S, Kind> From<(Exchange, S, S, MarketDataInstrumentKind, Kind)>
@@ -268,11 +272,11 @@ pub fn exchange_supports_instrument_kind_sub_kind(
     use SubKind::*;
 
     match (exchange_id, instrument_kind, sub_kind) {
-        (BinanceSpot, Spot, PublicTrades | OrderBooksL1 | OrderBooksL2) => true,
+        (BinanceSpot, Spot, PublicTrades | OrderBooksL1 | OrderBooksL2 | Tickers24hr) => true,
         (
             BinanceFuturesUsd,
             Perpetual,
-            PublicTrades | OrderBooksL1 | OrderBooksL2 | Liquidations | MarkPrices,
+            PublicTrades | OrderBooksL1 | OrderBooksL2 | Liquidations | MarkPrices | Tickers24hr,
         ) => true,
         (Bitfinex, Spot, PublicTrades) => true,
         (Bitmex, Perpetual, PublicTrades) => true,
@@ -620,3 +624,4 @@ mod tests {
         }
     }
 }
+

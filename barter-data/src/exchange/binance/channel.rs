@@ -8,6 +8,7 @@ use crate::{
         candle_1m::Candles1m,
         liquidation::Liquidations,
         mark_price::MarkPrices,
+        ticker::Tickers24hr,
         trade::PublicTrades,
     },
 };
@@ -64,6 +65,11 @@ impl BinanceChannel {
     ///
     /// See docs: <https://binance-docs.github.io/apidocs/futures/en/#kline-candlestick-streams>
     pub const KLINE_1H: Self = Self("@kline_1h");
+    
+    /// [`Binance`] 24hr ticker channel name.
+    ///
+    /// See docs: <https://binance-docs.github.io/apidocs/futures/en/#24hr-ticker-price-change-statistics>
+    pub const TICKER_24HR: Self = Self("@ticker");
 }
 
 impl<Server, Instrument> Identifier<BinanceChannel>
@@ -106,19 +112,19 @@ impl<Server, Instrument> Identifier<BinanceChannel>
     }
 }
 
+impl<Server, Instrument> Identifier<BinanceChannel>
+    for Subscription<Binance<Server>, Instrument, Tickers24hr>
+{
+    fn id(&self) -> BinanceChannel {
+        BinanceChannel::TICKER_24HR
+    }
+}
+
 impl<Instrument> Identifier<BinanceChannel>
     for Subscription<BinanceFuturesUsd, Instrument, Liquidations>
 {
     fn id(&self) -> BinanceChannel {
         BinanceChannel::LIQUIDATIONS
-    }
-}
-
-impl<Instrument> Identifier<BinanceChannel>
-    for Subscription<BinanceFuturesUsd, Instrument, MarkPrices>
-{
-    fn id(&self) -> BinanceChannel {
-        BinanceChannel::MARK_PRICE
     }
 }
 
@@ -138,8 +144,17 @@ impl<Instrument> Identifier<BinanceChannel>
     }
 }
 
+impl<Instrument> Identifier<BinanceChannel>
+    for Subscription<BinanceFuturesUsd, Instrument, MarkPrices>
+{
+    fn id(&self) -> BinanceChannel {
+        BinanceChannel::MARK_PRICE
+    }
+}
+
 impl AsRef<str> for BinanceChannel {
     fn as_ref(&self) -> &str {
         self.0
     }
 }
+

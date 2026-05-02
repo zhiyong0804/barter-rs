@@ -14,7 +14,9 @@ use crate::{
         },
     },
     instrument::InstrumentData,
-    subscription::{book::OrderBooksL2, liquidation::Liquidations, mark_price::MarkPrices},
+    subscription::{
+        book::OrderBooksL2, liquidation::Liquidations, mark_price::MarkPrices, ticker::Tickers24hr,
+    },
     transformer::stateless::StatelessTransformer,
 };
 use barter_instrument::exchange::ExchangeId;
@@ -73,7 +75,7 @@ impl ExchangeServer for BinanceServerFuturesUsdPublic {
     const ID: ExchangeId = ExchangeId::BinanceFuturesUsd; // Reuse ID
 
     fn websocket_url() -> &'static str {
-        WEBSOCKET_BASE_URL_BINANCE_FUTURES_PUBLIC
+        WEBSOCKET_BASE_URL_BINANCE_FUTURES_USD
     }
 }
 
@@ -85,7 +87,7 @@ impl ExchangeServer for BinanceServerFuturesUsdMarket {
     const ID: ExchangeId = ExchangeId::BinanceFuturesUsd; // Reuse ID
 
     fn websocket_url() -> &'static str {
-        WEBSOCKET_BASE_URL_BINANCE_FUTURES_MARKET
+        WEBSOCKET_BASE_URL_BINANCE_FUTURES_USD
     }
 }
 
@@ -126,8 +128,25 @@ where
         BinanceWsStream<StatelessTransformer<Self, Instrument::Key, MarkPrices, BinanceMarkPrice>>;
 }
 
+impl<Instrument> StreamSelector<Instrument, Tickers24hr> for BinanceFuturesUsdMarket
+where
+    Instrument: InstrumentData,
+{
+    type SnapFetcher = NoInitialSnapshots;
+    
+    type Stream = BinanceWsStream<
+        StatelessTransformer<
+            Self,
+            Instrument::Key,
+            Tickers24hr,
+            crate::exchange::binance::binance_ticker::BinanceTicker,
+        >,
+    >;
+}
+
 impl Display for BinanceFuturesUsd {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "BinanceFuturesUsd")
     }
 }
+
