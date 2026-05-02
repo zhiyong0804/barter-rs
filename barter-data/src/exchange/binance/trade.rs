@@ -108,10 +108,10 @@ impl<InstrumentKey> From<(ExchangeId, InstrumentKey, BinanceTrade)>
                 price: trade.price,
                 amount: trade.amount,
                 side: trade.side,
-                event_timestamp: 0, // BinanceTrade中没有这个字段
+                event_timestamp: trade.event_timestamp,
                 trade_timestamp: trade.time.timestamp_millis() as u64,
                 symbol: symbol,
-                trade_type: None, // BinanceTrade中没有这个字段
+                trade_type: trade.trade_type.clone(),
                 time: trade.time,
             },
         })])

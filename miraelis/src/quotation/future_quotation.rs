@@ -72,7 +72,7 @@ impl FutureQuotation {
                 .map(|item| {
                     (
                         format!("{}|trade", item.symbol),
-                        BinanceFuturesUsdMarket::default(),
+                        BinanceFuturesUsdPublic::default(),
                         item.base.clone(),
                         item.quote.clone(),
                         MarketDataInstrumentKind::Perpetual,
@@ -128,7 +128,7 @@ impl FutureQuotation {
                 .map(|item| {
                     (
                         format!("{}|book_ticker", item.symbol),
-                        BinanceFuturesUsdMarket::default(),
+                        BinanceFuturesUsdPublic::default(),
                         item.base.clone(),
                         item.quote.clone(),
                         MarketDataInstrumentKind::Perpetual,

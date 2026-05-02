@@ -62,6 +62,8 @@ async fn sync_exchange_info(
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     init_logging_with_prefix("miraelis.log");
 
+    info!("startup miraelis");
+
     let config_override = config::parse_config_arg()?;
     let (config, _config_path, _project_root) =
         config::load_runtime_config(config_override).await?;
