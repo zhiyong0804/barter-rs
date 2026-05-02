@@ -473,14 +473,6 @@ impl FrameSignalModule {
         self.cfg.included_symbols.contains(&lower)
     }
 
-    fn get_recent_second(window: &UhfTradeWindow, back: usize) -> Option<&SecondTradeItem> {
-        let len = window.seconds_window.items.len();
-        if len <= back {
-            return None;
-        }
-        window.seconds_window.items.get(len - 1 - back)
-    }
-
     fn is_valid_second(item: &SecondTradeItem) -> bool {
         item.open.is_finite()
             && item.close.is_finite()
@@ -1050,7 +1042,7 @@ impl FrameSignalModule {
             let Some(tw) = sctx.trades.get(&symbol) else {
                 return;
             };
-            let Some(curr) = Self::get_recent_second(tw, 0) else {
+            let Some(curr) = tw.get_recent_second(-1) else {
                 return;
             };
             let wick = Self::is_valid_second(curr)
@@ -1260,13 +1252,13 @@ impl FrameSignalModule {
             let Some(tw) = sctx.trades.get(&symbol) else {
                 return;
             };
-            let Some(c) = Self::get_recent_second(tw, 0) else {
+            let Some(c) = tw.get_recent_second(-1) else {
                 return;
             };
-            let Some(p1) = Self::get_recent_second(tw, 1) else {
+            let Some(p1) = tw.get_recent_second(-2) else {
                 return;
             };
-            let Some(p2) = Self::get_recent_second(tw, 2) else {
+            let Some(p2) = tw.get_recent_second(-3) else {
                 return;
             };
             if !Self::is_valid_second(c) || !Self::is_valid_second(p1) || !Self::is_valid_second(p2)

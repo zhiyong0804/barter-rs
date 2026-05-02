@@ -465,18 +465,14 @@ impl UhfTradeWindow {
             }
         }
 
-        // 如果不需要重新扫描，就直接返回
         if !(need_rescan_high || need_rescan_low || need_rescan_open) {
             return;
         }
 
-        // Step 3: 如果需要重新扫描，才执行轻量级的全量更新
         self.recompute_seconds_window_fields_after_removal();
     }
 
-    /// Incrementally update the seconds window statistics when updating an existing second item
     fn update_second_item_incrementally(&mut self, item: &TradeItem) {
-        // Remove the contribution of the old item
         self.seconds_window.qty += item.qty;
         self.seconds_window.high = dmax(self.seconds_window.high, item.price);
         self.seconds_window.low = dmin(self.seconds_window.low, item.price);
@@ -545,23 +541,18 @@ impl UhfTradeWindow {
         self.minutes_window.second = new_item.second;
     }
 
-    /// Incrementally update the minutes window statistics when removing an old minute item
     fn remove_minute_item_incrementally(&mut self, old_item: &TradeMinuteItem) {
-        // Step 1: 减去被移除项的数量
         self.minutes_window.qty -= old_item.qty;
 
-        // Early exit if the window is now empty
         if self.minutes_window.items.is_empty() {
             self.reset_minutes_window();
             return;
         }
 
-        // Step 2: 判断是否需要重新扫描整个窗口来更新 high/low/open
         let mut need_rescan_high = false;
         let mut need_rescan_low = false;
         let mut need_rescan_open = false;
 
-        // Check if the removed item was contributing to the global high/low/open
         if !old_item.high.is_nan() && old_item.high == self.minutes_window.high {
             need_rescan_high = true;
         }
@@ -576,16 +567,13 @@ impl UhfTradeWindow {
             }
         }
 
-        // 如果不需要重新扫描，就直接返回
         if !(need_rescan_high || need_rescan_low || need_rescan_open) {
             return;
         }
 
-        // Step 3: 如果需要重新扫描，才执行轻量级的全量更新
         self.recompute_minutes_window_fields_after_removal();
     }
 
-    // Helper function to reset the window stats when it becomes empty
     fn reset_minutes_window(&mut self) {
         self.minutes_window.open = f64::NAN;
         self.minutes_window.close = f64::NAN;
@@ -593,7 +581,6 @@ impl UhfTradeWindow {
         self.minutes_window.low = f64::NAN;
     }
 
-    // Helper function to partially recompute only necessary fields
     fn recompute_minutes_window_fields_after_removal(&mut self) {
         self.minutes_window.open = f64::NAN;
         self.minutes_window.close = f64::NAN;
@@ -620,7 +607,6 @@ impl UhfTradeWindow {
             }
         }
 
-        // Update latest price and timestamp from the last item
         if let Some(last) = self.minutes_window.items.back() {
             self.minutes_window.price = last.close;
             self.minutes_window.second = last.second;
@@ -639,10 +625,7 @@ impl UhfTradeWindow {
 
         if let Some(current) = self.minutes_window.items.back_mut() {
             if current.second == minute_second {
-                // Store old values for incremental update
                 let old_qty = current.qty;
-
-                // Update the existing item
                 current.open = item.open;
                 current.close = item.close;
                 current.high = item.high;
@@ -651,20 +634,17 @@ impl UhfTradeWindow {
                 current.qty = item.volume;
                 current.bid_qty = item.bid_volume;
 
-                // Incrementally update the window statistics
-                self.minutes_window.qty += current.qty - old_qty; // Adjust total qty
+                self.minutes_window.qty += current.qty - old_qty;
                 self.minutes_window.close = current.close;
                 self.minutes_window.price = current.price;
                 self.minutes_window.high = dmax(self.minutes_window.high, current.high);
                 self.minutes_window.low = dmin(self.minutes_window.low, current.low);
 
-                // Update the latest price and timestamp
                 self.minutes_window.second = current.second;
                 return;
             }
         }
 
-        // Add a new minute item
         let new_item = TradeMinuteItem {
             open: item.open,
             close: item.close,
@@ -677,7 +657,6 @@ impl UhfTradeWindow {
             seconds: VecDeque::with_capacity(60),
         };
 
-        // Push the new item and update incrementally
         self.push_minute(new_item.clone());
     }
 
@@ -777,18 +756,15 @@ impl UhfTradeWindow {
         self.hours_window.bid_qty -= old_item.bid_qty;
         self.hours_window.ask_qty -= old_item.ask_qty;
 
-        // Early exit if the window is now empty
         if self.hours_window.items.is_empty() {
             self.reset_hours_window();
             return;
         }
 
-        // Step 2: 判断是否需要重新扫描整个窗口来更新 high/low/open
         let mut need_rescan_high = false;
         let mut need_rescan_low = false;
         let mut need_rescan_open = false;
 
-        // Check if the removed item was contributing to the global high/low/open
         if !old_item.high.is_nan() && old_item.high == self.hours_window.high {
             need_rescan_high = true;
         }
@@ -803,16 +779,13 @@ impl UhfTradeWindow {
             }
         }
 
-        // 如果不需要重新扫描，就直接返回
         if !(need_rescan_high || need_rescan_low || need_rescan_open) {
             return;
         }
 
-        // Step 3: 如果需要重新扫描，才执行轻量级的全量更新
         self.recompute_hours_window_fields_after_removal();
     }
 
-    // Helper function to reset the window stats when it becomes empty
     fn reset_hours_window(&mut self) {
         self.hours_window.open = f64::NAN;
         self.hours_window.close = f64::NAN;
@@ -936,15 +909,15 @@ impl UhfTradeWindow {
         self.best_bid_ask.best_ask_price
     }
 
-    pub fn get_target_price_qty_by_idx(&self, idx: i32) -> TradeWindowPriceQty {
+    pub fn get_target_price_qty_by_idx(&self, idx: i32) -> Option<TradeWindowPriceQty> {
         if self.seconds_window.items.is_empty() {
-            return TradeWindowPriceQty::default();
+            return None;
         }
 
         let len = self.seconds_window.items.len() as i32;
         let target = (len + idx).clamp(0, len - 1) as usize;
         let item = &self.seconds_window.items[target];
-        TradeWindowPriceQty {
+        Some(TradeWindowPriceQty {
             price: item.price,
             qty: item.qty,
             bid_qty: item.bid_qty,
@@ -954,7 +927,7 @@ impl UhfTradeWindow {
             low: item.low,
             second: item.second,
             event_time: item.event_time,
-        }
+        })
     }
 
     pub fn get_target_price_qty_by_second(&self, target_second: u64) -> TradeWindowPriceQty {
@@ -1119,6 +1092,22 @@ impl UhfTradeWindow {
             event_time: 0,
         }
     }
+
+    pub fn get_recent_second(&self, idx: i32) -> Option<&SecondTradeItem> {
+        if idx > 0 || self.seconds_window.items.is_empty() {
+            return None;
+        }
+
+        let len = self.seconds_window.items.len() as i32;
+        if -idx > len {
+            return None;
+        }
+
+        let target = (len + idx) as usize;
+
+        let item = &self.seconds_window.items[target];
+        Some(item)
+    }
 }
 
 #[cfg(test)]
@@ -1169,14 +1158,15 @@ mod tests {
             assert_eq!(0.6664, window.get_current_high_price());
             assert_eq!(0.6664, window.get_current_low_price());
 
-            let current_second_price_qty = window.get_target_price_qty_by_idx(-1);
-            assert_eq!(4.0, current_second_price_qty.qty);
-            assert_eq!(0.0, current_second_price_qty.bid_qty);
-            assert_eq!(0.6664, current_second_price_qty.open);
-            assert_eq!(0.6664, current_second_price_qty.close);
-            assert_eq!(0.6664, current_second_price_qty.high);
-            assert_eq!(0.6664, current_second_price_qty.low);
-            assert_eq!(0.6664, current_second_price_qty.price);
+            if let Some(current_second_price_qty) = window.get_target_price_qty_by_idx(-1) {
+                assert_eq!(4.0, current_second_price_qty.qty);
+                assert_eq!(0.0, current_second_price_qty.bid_qty);
+                assert_eq!(0.6664, current_second_price_qty.open);
+                assert_eq!(0.6664, current_second_price_qty.close);
+                assert_eq!(0.6664, current_second_price_qty.high);
+                assert_eq!(0.6664, current_second_price_qty.low);
+                assert_eq!(0.6664, current_second_price_qty.price);
+            }
         }
 
         for i in 1..10 {
@@ -1193,29 +1183,32 @@ mod tests {
         assert_eq!(262.0, window.seconds_window.qty);
         assert_eq!(7, window.seconds_window.items.len());
 
-        let current_second_price_qty = window.get_target_price_qty_by_idx(-1);
-        assert_eq!(0.6666, current_second_price_qty.open);
-        assert_eq!(0.6666, current_second_price_qty.close);
-        assert_eq!(0.6666, current_second_price_qty.high);
-        assert_eq!(0.6666, current_second_price_qty.low);
-        assert_eq!(40.0, current_second_price_qty.qty);
-        assert_eq!(0.0, current_second_price_qty.bid_qty);
+        if let Some(current_second_price_qty) = window.get_target_price_qty_by_idx(-1) {
+            assert_eq!(0.6666, current_second_price_qty.open);
+            assert_eq!(0.6666, current_second_price_qty.close);
+            assert_eq!(0.6666, current_second_price_qty.high);
+            assert_eq!(0.6666, current_second_price_qty.low);
+            assert_eq!(40.0, current_second_price_qty.qty);
+            assert_eq!(0.0, current_second_price_qty.bid_qty);
+        }
 
-        let pre_second_price_qty = window.get_target_price_qty_by_idx(-2);
-        assert!(pre_second_price_qty.open.is_nan());
-        assert!(pre_second_price_qty.close.is_nan());
-        assert!(pre_second_price_qty.high.is_nan());
-        assert!(pre_second_price_qty.low.is_nan());
-        assert_eq!(0.0, pre_second_price_qty.qty);
-        assert_eq!(0.0, pre_second_price_qty.bid_qty);
+        if let Some(pre_second_price_qty) = window.get_target_price_qty_by_idx(-2) {
+            assert!(pre_second_price_qty.open.is_nan());
+            assert!(pre_second_price_qty.close.is_nan());
+            assert!(pre_second_price_qty.high.is_nan());
+            assert!(pre_second_price_qty.low.is_nan());
+            assert_eq!(0.0, pre_second_price_qty.qty);
+            assert_eq!(0.0, pre_second_price_qty.bid_qty);
+        }
 
-        let pre_pre_second_price_qty = window.get_target_price_qty_by_idx(-3);
-        assert_eq!(0.6666, pre_pre_second_price_qty.open);
-        assert_eq!(0.6666, pre_pre_second_price_qty.close);
-        assert_eq!(0.6666, pre_pre_second_price_qty.high);
-        assert_eq!(0.6666, pre_pre_second_price_qty.low);
-        assert_eq!(8.0, pre_pre_second_price_qty.qty);
-        assert_eq!(8.0, pre_pre_second_price_qty.bid_qty);
+        if let Some(pre_pre_second_price_qty) = window.get_target_price_qty_by_idx(-3) {
+            assert_eq!(0.6666, pre_pre_second_price_qty.open);
+            assert_eq!(0.6666, pre_pre_second_price_qty.close);
+            assert_eq!(0.6666, pre_pre_second_price_qty.high);
+            assert_eq!(0.6666, pre_pre_second_price_qty.low);
+            assert_eq!(8.0, pre_pre_second_price_qty.qty);
+            assert_eq!(8.0, pre_pre_second_price_qty.bid_qty);
+        }
 
         for i in 11..228 {
             window.update(trades[i].clone());
@@ -1229,14 +1222,15 @@ mod tests {
         assert_eq!(TRADE_SECONDS_WINDOW_SIZE, window.seconds_window.items.len());
         assert_eq!(15698.0, window.seconds_window.qty);
 
-        let oldest_second_price_qty = window.get_target_price_qty_by_idx(-66);
-        assert!(oldest_second_price_qty.open.is_nan());
-        assert!(oldest_second_price_qty.close.is_nan());
-        assert!(oldest_second_price_qty.high.is_nan());
-        assert!(oldest_second_price_qty.low.is_nan());
-        assert_eq!(0.0, oldest_second_price_qty.qty);
-        assert_eq!(0.0, oldest_second_price_qty.bid_qty);
-        assert_eq!(1777575895, oldest_second_price_qty.second);
+        if let Some(oldest_second_price_qty) = window.get_target_price_qty_by_idx(-66) {
+            assert!(oldest_second_price_qty.open.is_nan());
+            assert!(oldest_second_price_qty.close.is_nan());
+            assert!(oldest_second_price_qty.high.is_nan());
+            assert!(oldest_second_price_qty.low.is_nan());
+            assert_eq!(0.0, oldest_second_price_qty.qty);
+            assert_eq!(0.0, oldest_second_price_qty.bid_qty);
+            assert_eq!(1777575895, oldest_second_price_qty.second);
+        }
 
         // Print final state for verification
         println!("Final state after processing {} trades:", trade_count);
