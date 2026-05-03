@@ -4,6 +4,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 use tokio::sync::mpsc::UnboundedSender;
+use tracing::info;
 
 use crate::{
     quotation::trade_window::{SecondTradeItem, TradeItem, UhfTradeWindow},
@@ -422,12 +423,12 @@ impl FrameSignalModule {
         let included_symbols = config
             .symbols
             .iter()
-            .map(|s| s.to_ascii_lowercase())
+            .map(|s| s.to_ascii_uppercase())
             .collect::<HashSet<_>>();
         let excluded_symbols = config
             .excluded_symbols
             .iter()
-            .map(|s| s.to_ascii_lowercase())
+            .map(|s| s.to_ascii_uppercase())
             .collect::<HashSet<_>>();
 
         let mut ctx = FrameSignalContext::default();
@@ -459,9 +460,8 @@ impl FrameSignalModule {
         }
     }
 
-    fn symbol_enabled(&self, symbol: &str) -> bool {
-        let lower = symbol.to_ascii_lowercase();
-        if self.cfg.excluded_symbols.contains(&lower) {
+    fn symbol_enabled(&self, symbol: &String) -> bool {
+        if self.cfg.excluded_symbols.contains(symbol) {
             return false;
         }
         if self.cfg.included_symbols.contains("*") {
@@ -470,7 +470,7 @@ impl FrameSignalModule {
         if self.cfg.included_symbols.is_empty() {
             return true;
         }
-        self.cfg.included_symbols.contains(&lower)
+        self.cfg.included_symbols.contains(symbol)
     }
 
     fn is_valid_second(item: &SecondTradeItem) -> bool {
@@ -898,7 +898,7 @@ impl FrameSignalModule {
         let Some(octx) = self
             .cfg
             .frame_ctxs
-            .get_mut(&response.symbol.to_ascii_lowercase())
+            .get_mut(&response.symbol.to_ascii_uppercase())
         else {
             return;
         };
@@ -919,7 +919,7 @@ impl FrameSignalModule {
     }
 
     pub fn handle_query_response(&mut self, response: &OrderResponse) {
-        let symbol_key = response.symbol.to_ascii_lowercase();
+        let symbol_key = response.symbol.to_ascii_uppercase();
         let Some(octx) = self.cfg.frame_ctxs.get_mut(&symbol_key) else {
             return;
         };
@@ -969,7 +969,7 @@ impl FrameSignalModule {
         let Some(octx) = self
             .cfg
             .frame_ctxs
-            .get_mut(&response.symbol.to_ascii_lowercase())
+            .get_mut(&response.symbol.to_ascii_uppercase())
         else {
             return;
         };
@@ -979,7 +979,7 @@ impl FrameSignalModule {
     }
 
     pub fn handle_query_all_orders(&mut self, symbol: &str, event_time: u64) {
-        let Some(octx) = self.cfg.frame_ctxs.get_mut(&symbol.to_ascii_lowercase()) else {
+        let Some(octx) = self.cfg.frame_ctxs.get_mut(&symbol.to_ascii_uppercase()) else {
             return;
         };
         if event_time / 1000 == octx.last_query_time / 1000 {
@@ -1003,7 +1003,7 @@ impl FrameSignalModule {
     }
 
     pub fn cancel_all_open_orders(&self, symbol: &str) {
-        let Some(octx) = self.cfg.frame_ctxs.get(&symbol.to_ascii_lowercase()) else {
+        let Some(octx) = self.cfg.frame_ctxs.get(&symbol.to_ascii_uppercase()) else {
             return;
         };
         for order in octx.orders.values() {
@@ -1029,7 +1029,7 @@ impl FrameSignalModule {
             return;
         }
 
-        let symbol = trade.symbol.to_ascii_lowercase();
+        let symbol = trade.symbol.to_ascii_uppercase();
         let now_ms = trade.event_time;
         let config = self.cfg.config.clone();
         let window_ms = config.spike_burst_window_seconds * 1_000;
@@ -1246,7 +1246,7 @@ impl FrameSignalModule {
     fn check_and_emit(&mut self, sctx: &mut StrategyContext, trade: &TradeItem) {
         let strategy_id = self.cfg.id;
         let strategy_name = self.cfg.name.clone();
-        let symbol = trade.symbol.to_ascii_lowercase();
+        let symbol = trade.symbol.to_ascii_uppercase();
 
         let (curr, prev1, prev2, tf_total_value, seconds_qty, seconds_count) = {
             let Some(tw) = sctx.trades.get(&symbol) else {
@@ -1274,26 +1274,6 @@ impl FrameSignalModule {
                 tw.seconds_window.items.len() as f64,
             )
         };
-
-        if !self.symbol_enabled(&symbol) {
-            return;
-        }
-
-        {
-            let config = self.cfg.config.clone();
-            self.cfg
-                .frame_ctxs
-                .entry(symbol.clone())
-                .or_insert_with(|| FrameOrderContext::new(symbol.clone(), &config));
-        }
-
-        if let Some(ei) = sctx.exchange_info.get(&symbol).cloned() {
-            if let Some(octx) = self.cfg.frame_ctxs.get_mut(&symbol) {
-                octx.price_precision = ei.price_precision as i32;
-                octx.quantity_precision = ei.qty_precision as i32;
-                octx.price_tick_size = ei.tick_size;
-            }
-        }
 
         let order_seq = &self.order_seq;
         let order_tx = self.order_tx.as_ref();
@@ -1508,7 +1488,7 @@ impl StrategyModule for FrameSignalModule {
 
     fn start(
         &mut self,
-        _ctx: &mut StrategyContext,
+        sctx: &mut StrategyContext,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.cfg.started = true;
         tracing::info!(
@@ -1529,6 +1509,33 @@ impl StrategyModule for FrameSignalModule {
             order_execution = self.order_tx.is_some(),
             "frame module started"
         );
+
+        let mut count = 0;
+        let mut symbols = String::from("");
+
+        for (symbol, ei) in sctx.exchange_info.iter() {
+            let symbol = symbol.to_ascii_uppercase();
+            if !self.symbol_enabled(&symbol) {
+                continue;
+            }
+
+            count += 1;
+            symbols = symbols + "," + &symbol.clone();
+
+            let config = self.cfg.config.clone();
+            let mut octx = FrameOrderContext::new(symbol.clone(), &config);
+            octx.price_precision = ei.price_precision as i32;
+            octx.quantity_precision = ei.qty_precision as i32;
+            octx.price_tick_size = ei.tick_size;
+
+            self.cfg
+                .frame_ctxs
+                .entry(symbol.clone())
+                .or_insert_with(|| octx);
+        }
+
+        info!("frame init {} symbols: {}", count, symbols);
+
         Ok(())
     }
 

@@ -23,4 +23,5 @@ hmac = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 bytes = "1.5"
+anyhow = "1.0.102"
 memmap2 = "0.9.10"

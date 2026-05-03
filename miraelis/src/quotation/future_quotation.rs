@@ -202,12 +202,17 @@ impl FutureQuotation {
 
                                 // Handle Trade events
                                 if let DataKind::Trade(_) = event.kind {
-                                    if let Err(e) = writer.write_market_event(event.clone()) {
-                                        tracing::error!(
-                                            instrument = %event.instrument,
-                                            error = ?e,
-                                            "Failed to write trade event to file"
-                                        );
+                                    let symbol = extract_symbol(&event.instrument);
+                                    if let Some(tw) = engine.ctx.trades.get(&symbol) {
+                                        if tw.hours_window.tf_total_value > 20000000.0 {
+                                            if let Err(e) = writer.write_market_event(event.clone()) {
+                                                tracing::error!(
+                                                    instrument = %event.instrument,
+                                                    error = ?e,
+                                                    "Failed to write trade event to file"
+                                                );
+                                            }
+                                        }
                                     }
                                 }
 
@@ -297,12 +302,17 @@ impl FutureQuotation {
 
                                 // Handle Trade events
                                 if let DataKind::Trade(_) = event.kind {
-                                    if let Err(e) = writer.write_market_event(event.clone()) {
-                                        tracing::error!(
-                                            instrument = %event.instrument,
-                                            error = ?e,
-                                            "Failed to write trade event to file"
-                                        );
+                                    let symbol = extract_symbol(&event.instrument);
+                                    if let Some(tw) = engine.ctx.trades.get(&symbol) {
+                                        if tw.hours_window.tf_total_value > 20000000.0 {
+                                            if let Err(e) = writer.write_market_event(event.clone()) {
+                                                tracing::error!(
+                                                    instrument = %event.instrument,
+                                                    error = ?e,
+                                                    "Failed to write trade event to file"
+                                                );
+                                            }
+                                        }
                                     }
                                 }
 

@@ -559,7 +559,7 @@ mod tests {
 
     fn init_test_tracing() -> tracing::subscriber::DefaultGuard {
         let subscriber = tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::TRACE)
+            .with_max_level(tracing::Level::DEBUG)
             .with_target(true)
             .with_thread_ids(true)
             .with_thread_names(true)

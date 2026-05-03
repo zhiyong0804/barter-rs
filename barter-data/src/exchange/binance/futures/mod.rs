@@ -75,7 +75,7 @@ impl ExchangeServer for BinanceServerFuturesUsdPublic {
     const ID: ExchangeId = ExchangeId::BinanceFuturesUsd; // Reuse ID
 
     fn websocket_url() -> &'static str {
-        WEBSOCKET_BASE_URL_BINANCE_FUTURES_USD
+        WEBSOCKET_BASE_URL_BINANCE_FUTURES_PUBLIC
     }
 }
 
@@ -87,7 +87,7 @@ impl ExchangeServer for BinanceServerFuturesUsdMarket {
     const ID: ExchangeId = ExchangeId::BinanceFuturesUsd; // Reuse ID
 
     fn websocket_url() -> &'static str {
-        WEBSOCKET_BASE_URL_BINANCE_FUTURES_USD
+        WEBSOCKET_BASE_URL_BINANCE_FUTURES_MARKET
     }
 }
 

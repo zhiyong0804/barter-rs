@@ -105,10 +105,8 @@ pub struct SymbolTradingRule {
 
 impl BinanceCredentials {
     fn from_env(config: &ExecutionConfig) -> Result<Self, ExecutionError> {
-        let api_key = env::var(&config.api_key_env)
-            .map_err(|_| ExecutionError::MissingEnvVar(config.api_key_env.clone()))?;
-        let api_secret = env::var(&config.api_secret_env)
-            .map_err(|_| ExecutionError::MissingEnvVar(config.api_secret_env.clone()))?;
+        let api_key = config.api_key_env.clone();
+        let api_secret = config.api_secret_env.clone();
 
         Ok(Self {
             api_key,
