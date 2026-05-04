@@ -17,7 +17,7 @@ use barter_instrument::instrument::market_data::kind::MarketDataInstrumentKind;
 use futures_util::StreamExt;
 use std::sync::Arc;
 use tokio::{
-    sync::mpsc::UnboundedReceiver,
+    sync::mpsc::{UnboundedReceiver, UnboundedSender},
     time::{interval, Duration},
 };
 use tracing::{info, warn};
@@ -44,8 +44,11 @@ impl FutureQuotation {
         debug_trade_window_interval_secs: u64,
         engine: &mut StrategyEngine,
         writer: Arc<AsyncRollbackWriter>,
-        telegram_notifier: Option<&TelegramNotifier>,
+        telegram_notifier: Arc<TelegramNotifier>,
         mut order_response_rx: Option<&mut UnboundedReceiver<OrderResponse>>,
+        warm_up_quotation_rx: &mut UnboundedReceiver<
+            barter_data::event::MarketEvent<String, DataKind>,
+        >,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let debug_trade_window_symbol = debug_trade_window_symbol
             .map(|value| value.trim().to_ascii_uppercase())
@@ -182,14 +185,12 @@ impl FutureQuotation {
                         match event {
                             reconnect::Event::Reconnecting(exchange) => {
                                 warn!(exchange = %exchange, "market stream reconnecting");
-                                if let Some(notifier) = telegram_notifier {
-                                    let text = format!("market stream reconnecting: {}", exchange);
-                                    if let Err(error) = notifier
-                                        .send_for_signal_type(SignalType::SystemStatus, &text)
-                                        .await
-                                    {
-                                        warn!(?error, "failed to send telegram reconnect notification");
-                                    }
+                                let text = format!("market stream reconnecting: {}", exchange);
+                                if let Err(error) = telegram_notifier
+                                    .send_for_signal_type(SignalType::SystemStatus, &text)
+                                    .await
+                                {
+                                    warn!(?error, "failed to send telegram reconnect notification");
                                 }
                             }
                             reconnect::Event::Item(event) => {
@@ -269,6 +270,65 @@ impl FutureQuotation {
                             engine.dispatch_order_response(order_resp);
                         }
                     }
+                    warm_up_quotation_event = warm_up_quotation_rx.recv() => {
+                        if let Some(event) = warm_up_quotation_event {
+                            if let DataKind::Candle(ref candle) = event.kind {
+                                let symbol = extract_symbol(&event.instrument);
+                                let interval = if event.instrument.ends_with("|kline_1h") {
+                                    UhfKlineInterval::H1
+                                } else if event.instrument.ends_with("|kline_1m") {
+                                    UhfKlineInterval::M1
+                                } else {
+                                    UhfKlineInterval::M1
+                                };
+
+                                let close_ms = candle.close_time.timestamp_millis().max(0) as u64;
+                                let span_ms = match interval {
+                                    UhfKlineInterval::M1 => 60_000,
+                                    UhfKlineInterval::H1 => 3_600_000,
+                                };
+
+                                let kline = QuotationKline {
+                                    symbol: symbol.clone(),
+                                    event_time: close_ms,
+                                    start_timestamp: close_ms.saturating_sub(span_ms),
+                                    end_timestamp: close_ms,
+                                    interval,
+                                    start_trade_id: 0,
+                                    end_trade_id: candle.trade_count,
+                                    open: candle.open,
+                                    close: candle.close,
+                                    high: candle.high,
+                                    low: candle.low,
+                                    volume: candle.volume,
+                                    bid_volume: candle.bid_volume,
+                                    is_final: candle.is_final,
+                                };
+
+                                // Add logging for K-line processing
+                                if debug_trade_window_symbol
+                                    .as_ref()
+                                    .map_or(false, |s| s == &symbol)
+                                {
+                                    tracing::debug!(
+                                        symbol = %symbol,
+                                        interval = ?interval,
+                                        open = kline.open,
+                                        close = kline.close,
+                                        high = kline.high,
+                                        low = kline.low,
+                                        volume = kline.volume,
+                                        is_final = kline.is_final,
+                                        "Processing K-line for warm up"
+                                    );
+                                }
+
+                                if let Some(tw) = engine.ctx.trades.get_mut(&symbol) {
+                                    tw.update_kline(kline);
+                                }
+                            }
+                        }
+                    }
                 }
             }
         } else {
@@ -282,14 +342,12 @@ impl FutureQuotation {
                         match event {
                             reconnect::Event::Reconnecting(exchange) => {
                                 warn!(exchange = %exchange, "market stream reconnecting");
-                                if let Some(notifier) = telegram_notifier {
-                                    let text = format!("market stream reconnecting: {}", exchange);
-                                    if let Err(error) = notifier
-                                        .send_for_signal_type(SignalType::SystemStatus, &text)
-                                        .await
-                                    {
-                                        warn!(?error, "failed to send telegram reconnect notification");
-                                    }
+                                let text = format!("market stream reconnecting: {}", exchange);
+                                if let Err(error) = telegram_notifier
+                                    .send_for_signal_type(SignalType::SystemStatus, &text)
+                                    .await
+                                {
+                                    warn!(?error, "failed to send telegram reconnect notification");
                                 }
                             }
                             reconnect::Event::Item(event) => {
@@ -318,10 +376,6 @@ impl FutureQuotation {
 
                                 // Handle Liquidation events
                                 if let DataKind::Liquidation(_) = event.kind {
-                                    tracing::info!(
-                                        instrument = %event.instrument,
-                                        "Received liquidation event"
-                                    );
                                     if let Err(e) = writer.write_market_event(event.clone()) {
                                         tracing::error!(
                                             instrument = %event.instrument,
@@ -378,6 +432,7 @@ impl FutureQuotation {
     pub async fn warm_up_trade_windows(
         rest_base: &str,
         symbols: &[String],
+        warm_up_quotation_tx: UnboundedSender<barter_data::event::MarketEvent<String, DataKind>>,
         writer: Arc<AsyncRollbackWriter>,
     ) {
         use barter_data::subscription::candle::Candle;
@@ -555,6 +610,7 @@ impl FutureQuotation {
                     trade_count: 0,
                     is_final: true,
                 };
+
                 let instrument = format!("{}|kline_1h", symbol);
                 let event = barter_data::event::MarketEvent {
                     time_exchange: candle.close_time,
@@ -563,6 +619,7 @@ impl FutureQuotation {
                     instrument,
                     kind: barter_data::event::DataKind::Candle(candle),
                 };
+                warm_up_quotation_tx.send(event.clone());
                 if let Err(error) = writer.write_market_event(event) {
                     tracing::warn!(
                         ?error,
@@ -593,6 +650,7 @@ impl FutureQuotation {
                     instrument,
                     kind: barter_data::event::DataKind::Candle(candle),
                 };
+                warm_up_quotation_tx.send(event.clone());
                 // tracing::debug!("successed fetch_klines 1m symbol={}", symbol);
                 if let Err(error) = writer.write_market_event(event) {
                     tracing::warn!(

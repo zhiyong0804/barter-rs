@@ -234,6 +234,12 @@ impl HugeMomentumSignalModule {
     }
 
     pub fn check(&mut self, symbol: &str, tw: &UhfTradeWindow) -> Option<HugeMomentumSignal> {
+        let tf_24h_qty = tw.hours_window.tf_total_qty;
+        let tf_24h_value = tw.hours_window.tf_total_value;
+        if tf_24h_value < self.cfg.tf_24h_qty_value_threshold || tf_24h_qty <= 0.0 {
+            return None;
+        }
+
         if !Self::precheck_trade_window(tw, self.cfg.required_minutes) {
             tracing::trace!(
                 strategy = self.name(),
@@ -365,11 +371,11 @@ impl HugeMomentumSignalModule {
             "huge momentum ignite evaluation"
         );
 
-        let tf_24h_qty = tw.hours_window.tf_total_qty;
-        let tf_24h_value = tw.hours_window.tf_total_value;
-        if tf_24h_value < self.cfg.tf_24h_qty_value_threshold || tf_24h_qty <= 0.0 {
-            return None;
-        }
+        // let tf_24h_qty = tw.hours_window.tf_total_qty;
+        // let tf_24h_value = tw.hours_window.tf_total_value;
+        // if tf_24h_value < self.cfg.tf_24h_qty_value_threshold || tf_24h_qty <= 0.0 {
+        //    return None;
+        // }
 
         let symbol_ctx = self
             .cfg

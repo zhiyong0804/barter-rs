@@ -1,3 +1,4 @@
+use anyhow::{anyhow, Context, Result};
 use barter::logging::init_logging_with_prefix;
 use barter_integration::{
     error::SocketError,
@@ -79,7 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let exchange_info = sync_exchange_info(&rest_client, &config.exchange_info_output).await?;
     let symbol_specs = config::build_symbol_specs(&config, &exchange_info)?;
-    let telegram_notifier = build_telegram_notifier(&config);
+    let telegram_notifier = build_telegram_notifier(&config)?;
 
     let sync_client = RestClient::new(
         config.binance_rest_base_url.clone(),
@@ -111,6 +112,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let execution_symbol_rules = config::build_execution_symbol_rules(&exchange_info);
 
     // -- 预热：下载历史 k 线，让策略（如 HugeMomentum）在直播流开始前就有足够数据 --
+    let (warm_up_quotation_tx, mut warm_up_quotation_rx) = tokio::sync::mpsc::unbounded_channel();
     let warmup_symbols: Vec<String> = symbol_specs
         .iter()
         .map(|s| s.symbol.to_ascii_uppercase())
@@ -120,8 +122,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let writer_clone = writer.clone();
     tokio::spawn(async move {
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-        FutureQuotation::warm_up_trade_windows(&warmup_rest_base, &warmup_symbols, writer_clone)
-            .await;
+        FutureQuotation::warm_up_trade_windows(
+            &warmup_rest_base,
+            &warmup_symbols,
+            warm_up_quotation_tx,
+            writer_clone,
+        )
+        .await;
     });
 
     let (order_tx, order_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -152,19 +159,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .await?;
     }
 
-    if let Some(notifier) = &telegram_notifier {
-        if let Err(error) = notifier
-            .send_for_signal_type(
-                SignalType::SystemStatus,
-                &format!(
-                    "miraelis-market-ingest started, symbols: {}",
-                    symbol_specs.len()
-                ),
-            )
-            .await
-        {
-            warn!(?error, "failed to send telegram startup notification");
-        }
+    if let Err(error) = telegram_notifier
+        .send_for_signal_type(
+            SignalType::SystemStatus,
+            &format!(
+                "miraelis-market-ingest started, symbols: {}",
+                symbol_specs.len()
+            ),
+        )
+        .await
+    {
+        warn!(?error, "failed to send telegram startup notification");
     }
 
     FutureQuotation::run_market_streams(
@@ -174,21 +179,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         config.debug_trade_window_interval_secs,
         &mut engine,
         writer.clone(),
-        telegram_notifier.as_ref(),
+        telegram_notifier.clone(),
         if config.execution_cfg.enabled {
             Some(&mut order_response_rx)
         } else {
             None
         },
+        &mut warm_up_quotation_rx,
     )
     .await?;
     Ok(())
 }
 
-fn build_telegram_notifier(config: &AppConfig) -> Option<TelegramNotifier> {
-    let token = config.telegram_bot_token.as_ref()?.trim().to_owned();
+fn build_telegram_notifier(config: &AppConfig) -> Result<Arc<TelegramNotifier>> {
+    let token = config
+        .telegram_bot_token
+        .as_ref()
+        .ok_or_else(|| anyhow!("Missing telegram_bot_token"))?
+        .trim()
+        .to_owned();
+
     if token.is_empty() {
-        return None;
+        return Err(anyhow!("Telegram bot token is empty"));
     }
 
     let default_chat_id = config.telegram_chat_id.as_ref().and_then(|value| {
@@ -201,13 +213,15 @@ fn build_telegram_notifier(config: &AppConfig) -> Option<TelegramNotifier> {
     });
 
     if default_chat_id.is_none() && !config.telegram_signal_chat_ids.has_any() {
-        return None;
+        return Err(anyhow!(
+            "Neither default chat ID nor signal chat IDs are provided"
+        ));
     }
 
-    Some(TelegramNotifier::with_signal_routes(
+    Ok(Arc::new(TelegramNotifier::with_signal_routes(
         token,
         default_chat_id,
         config.telegram_signal_chat_ids.clone(),
-    ))
+    )))
 }
 

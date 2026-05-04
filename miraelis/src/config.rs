@@ -1,6 +1,6 @@
 use barter_integration::{
     error::SocketError,
-    protocol::http::{HttpParser, rest::RestRequest},
+    protocol::http::{rest::RestRequest, HttpParser},
 };
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};

@@ -118,3 +118,4 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 url.workspace = true
 bytes.workspace = true
 memmap2 = "0.9.10"
+anyhow = "1.0.102"

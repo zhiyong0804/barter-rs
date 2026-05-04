@@ -7,6 +7,7 @@ use sha2::Sha256;
 use std::{
     collections::{BTreeMap, HashMap},
     env,
+    sync::Arc,
     time::Duration,
 };
 use thiserror::Error;
@@ -121,7 +122,7 @@ pub async fn start_execution_tasks(
     order_rx: UnboundedReceiver<OrderRequest>,
     response_tx: UnboundedSender<OrderResponse>,
     symbol_rules: HashMap<String, SymbolTradingRule>,
-    telegram_notifier: Option<TelegramNotifier>,
+    telegram_notifier: Arc<TelegramNotifier>,
 ) -> Result<(), ExecutionError> {
     if !config.enabled {
         return Ok(());
@@ -145,6 +146,12 @@ pub async fn start_execution_tasks(
         )
         .await;
     });
+
+    tracing::info!(
+        "api_key:{}, api_secret:{}",
+        credentials.api_key.clone(),
+        credentials.api_secret.clone()
+    );
 
     let listen_key = create_listen_key(&rest_base_url, &credentials.api_key).await?;
 
@@ -179,7 +186,7 @@ async fn run_trade_ws_loop(
     mut order_rx: UnboundedReceiver<OrderRequest>,
     response_tx: UnboundedSender<OrderResponse>,
     symbol_rules: HashMap<String, SymbolTradingRule>,
-    telegram_notifier: Option<TelegramNotifier>,
+    telegram_notifier: Arc<TelegramNotifier>,
 ) {
     let mut req_seq: u64 = 1;
 
@@ -211,7 +218,7 @@ async fn run_trade_ws_loop(
                         Err(error) => {
                             error!(?error, "normalize order request failed");
                             let text = format!("❌ order normalize failed: {error}");
-                            send_order_notify(&telegram_notifier, &text).await;
+                            send_order_notify(telegram_notifier.clone(), &text).await;
                             continue;
                         }
                     };
@@ -232,7 +239,7 @@ async fn run_trade_ws_loop(
                                 "❌ order payload build failed\nsymbol: {}\ncid: {}\nerror: {}",
                                 normalized.symbol, normalized.client_order_id, error
                             );
-                            send_order_notify(&telegram_notifier, &text).await;
+                            send_order_notify(telegram_notifier.clone(), &text).await;
                             let _ = response_tx.send(OrderResponse {
                                 action: OrderResponseAction::Put,
                                 client_order_id: normalized.client_order_id,
@@ -249,7 +256,7 @@ async fn run_trade_ws_loop(
                     if let Err(error) = ws_write.send(Message::Text(payload.into())).await {
                         error!(?error, "send ws order payload failed");
                         let text = format!("❌ order ws send failed: {error}");
-                        send_order_notify(&telegram_notifier, &text).await;
+                        send_order_notify(telegram_notifier.clone(), &text).await;
                         break;
                     }
                 }
@@ -274,12 +281,12 @@ async fn run_trade_ws_loop(
                                 match parsed {
                                     Ok(resp) => {
                                         let notify = format_order_ack_notify(&resp);
-                                        send_order_notify(&telegram_notifier, &notify).await;
+                                        send_order_notify(telegram_notifier.clone(), &notify).await;
                                         let _ = response_tx.send(resp);
                                     }
                                     Err(reason) => {
                                         let notify = format!("❌ order rejected\n{}", reason);
-                                        send_order_notify(&telegram_notifier, &notify).await;
+                                        send_order_notify(telegram_notifier.clone(), &notify).await;
                                     }
                                 }
                             }
@@ -308,7 +315,7 @@ async fn run_user_data_ws_loop(
     config: ExecutionConfig,
     listen_key: String,
     response_tx: UnboundedSender<OrderResponse>,
-    telegram_notifier: Option<TelegramNotifier>,
+    telegram_notifier: Arc<TelegramNotifier>,
 ) {
     let ws_url = format!(
         "{}/{}",
@@ -344,7 +351,7 @@ async fn run_user_data_ws_loop(
                 Message::Text(text) => {
                     if let Some(resp) = parse_user_data_order_update(&text) {
                         let notify = format_order_status_notify(&resp);
-                        send_order_notify(&telegram_notifier, &notify).await;
+                        send_order_notify(telegram_notifier.clone(), &notify).await;
                         let _ = response_tx.send(resp);
                     }
                 }
@@ -662,14 +669,12 @@ fn format_order_status_notify(resp: &OrderResponse) -> String {
     )
 }
 
-async fn send_order_notify(notifier: &Option<TelegramNotifier>, text: &str) {
-    if let Some(notifier) = notifier {
-        if let Err(error) = notifier
-            .send_for_signal_type(SignalType::OrderNotify, text)
-            .await
-        {
-            warn!(?error, "send telegram order notify failed");
-        }
+async fn send_order_notify(notifier: Arc<TelegramNotifier>, text: &str) {
+    if let Err(error) = notifier
+        .send_for_signal_type(SignalType::OrderNotify, text)
+        .await
+    {
+        warn!(?error, "send telegram order notify failed");
     }
 }
 
@@ -742,3 +747,4 @@ fn normalize_qty(qty: f64, step_size: f64, precision: i32) -> f64 {
     let factor = 10f64.powi(precision.max(0));
     (stepped * factor).floor() / factor
 }
+
