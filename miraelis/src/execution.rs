@@ -224,7 +224,9 @@ async fn run_trade_ws_loop(
                     };
 
                     req_seq = req_seq.saturating_add(1);
-                    let request_id = format!("frame-{}-{}", normalized.client_order_id, req_seq);
+                    // 生成符合Binance API要求的request_id
+                    // 必须匹配正则表达式: ^[a-zA-Z0-9-_]{1,36}$
+                    let request_id = format!("frame_{}_{}", req_seq, chrono::Utc::now().timestamp_millis() % 1000000);
 
                     let payload = match build_ws_order_payload(
                         &request_id,
@@ -252,6 +254,8 @@ async fn run_trade_ws_loop(
                             continue;
                         }
                     };
+
+                    info!("order payload: {}", payload);
 
                     if let Err(error) = ws_write.send(Message::Text(payload.into())).await {
                         error!(?error, "send ws order payload failed");
@@ -480,6 +484,11 @@ fn build_ws_order_payload(
     if order.reduce_only {
         params.insert("reduceOnly".to_owned(), "true".to_owned());
     }
+    if order.side == PositionSide::Short {
+        params.insert("positionSide".to_owned(), "SHORT".to_owned());
+    } else {
+        params.insert("positionSide".to_owned(), "LONG".to_owned());
+    }
 
     let signature = sign_map(&params, &credentials.api_secret)?;
 
@@ -530,6 +539,9 @@ fn build_ws_order_payload(
     if let Some(v) = params.get("reduceOnly") {
         ws_params.insert("reduceOnly".to_owned(), Value::String(v.clone()));
     }
+    if let Some(v) = params.get("positionSide") {
+        ws_params.insert("positionSide".to_owned(), Value::String(v.clone()));
+    }
 
     let payload = serde_json::json!({
         "id": request_id,
@@ -555,6 +567,8 @@ fn sign_map(params: &BTreeMap<String, String>, secret: &str) -> Result<String, E
 }
 
 fn parse_trade_ws_response(text: &str) -> Option<Result<OrderResponse, String>> {
+    info!("order response: {}", text);
+
     let value: Value = serde_json::from_str(text).ok()?;
 
     let status_code = value.get("status").and_then(|v| v.as_i64());

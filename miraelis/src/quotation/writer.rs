@@ -171,7 +171,7 @@ impl ShardState {
             shard_idx,
             current_bytes,
             data_file,
-            ring_buffer: RingBuffer::new(4, 1024 * 1024 * 200)?, // 4 chunks, 200MB each
+            ring_buffer: RingBuffer::new(2, 1024 * 1024 * 200)?, // 2 chunks, 200MB each
         })
     }
 
@@ -640,4 +640,3 @@ impl Drop for AsyncRollbackWriter {
         // The task should check the shutdown flag and terminate itself.
     }
 }
-

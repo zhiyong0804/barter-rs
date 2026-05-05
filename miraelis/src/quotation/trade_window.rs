@@ -145,7 +145,7 @@ impl Default for SecondTradeItem {
             bid_qty: 0.0,
             second: 0,
             event_time: 0,
-            items: VecDeque::with_capacity(MAX_TRADES_PER_SECOND),
+            items: VecDeque::new(), // MAX_TRADES_PER_SECOND is just a hint for capacity, we can start with an empty VecDeque and let it grow as needed.
         }
     }
 }
@@ -1282,4 +1282,3 @@ mod tests {
         }
     }
 }
-
