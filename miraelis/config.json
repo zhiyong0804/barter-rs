@@ -25,7 +25,8 @@
     "required_minutes": 120,
     "confirm_score_threshold": 2.2,
     "pending_valid_seconds": 900,
-    "cooldown_seconds": 2700
+    "cooldown_seconds": 2700,
+    "order_usdt": 40
   },
   "frame_cfg": {
     "symbols": [

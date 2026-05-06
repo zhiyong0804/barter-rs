@@ -3,13 +3,60 @@ use std::{
     collections::HashMap,
     time::{SystemTime, UNIX_EPOCH},
 };
+use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    quotation::trade_window::{QuotationKline, TradeWindowPriceQty, UhfTradeWindow},
+    quotation::trade_window::{
+        BestBidAskItem, QuotationKline, TradeWindowPriceQty, UhfTradeWindow,
+    },
     signal::{HugeMomentumSignal, SignalLevel, SignalType, TradeSignalBase},
+    strategy::frame::{FrameOrderType, OrderRequest, PositionSide},
 };
 
 use super::{module_id, StrategyContext, StrategyModule};
+
+/// Tracks the open position for a single symbol after the momentum signal fires.
+#[derive(Debug, Clone, Default)]
+pub struct HugeMomentumPositionState {
+    /// True while we have an open position being managed.
+    pub active: bool,
+    /// Price at first entry (the signal candle close).
+    pub entry_price: f64,
+    /// Weighted-average cost across all fills (estimated from market price at order time).
+    pub avg_cost: f64,
+    /// Current open quantity (base asset).
+    pub total_qty: f64,
+    /// Quantity at maximum (after all adds done); used for TP sizing.
+    pub peak_qty: f64,
+    /// Highest mark price seen since position was opened.
+    pub highest_price: f64,
+    // ── entry / add-on flags ────────────────────────────────────────────────
+    /// Whether the initial 30% has been bought.
+    pub initial_done: bool,
+    /// Whether the +5% add (30%) has been placed.
+    pub add1_done: bool,
+    /// Whether the drawdown-from-high add (40%) has been placed.
+    pub add2_done: bool,
+    // ── take-profit / exit flags ────────────────────────────────────────────
+    /// Whether the +15% half-position close has been placed.
+    pub tp1_done: bool,
+    /// Whether the +20% close-30%-of-peak has been placed.
+    pub tp2_done: bool,
+    /// Whether the return-to-cost close has been placed.
+    pub tp3_done: bool,
+    /// Whether the stop-loss has been moved up after +10% gain.
+    pub move_stop_done: bool,
+    /// Active stop price. Starts at entry*(1-stop_loss_pct), may move to entry*1.03.
+    pub stop_price: f64,
+    /// Number of successful add-on buys executed for this position.
+    pub add_count: u32,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct HugeMomentumRuleEvent {
+    pub event_id: String,
+    pub fired_second: u64,
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct HugeMomentumSymbolContext {
@@ -18,6 +65,9 @@ pub struct HugeMomentumSymbolContext {
     pub breakout_timestamp: u64,
     pub breakout_price: f64,
     pub ignite_active: bool,
+    pub position: HugeMomentumPositionState,
+    /// Per-rule last fired event info, used for cooldown de-dup.
+    pub rule_events: HashMap<String, HugeMomentumRuleEvent>,
 }
 
 #[derive(Debug, Clone)]
@@ -35,6 +85,17 @@ pub struct HugeMomentumSignalCtx {
     pub pending_valid_seconds: u64,
     pub cooldown_seconds: u64,
     pub symbol_contexts: HashMap<String, HugeMomentumSymbolContext>,
+    // order management
+    pub order_usdt: f64,
+    pub add1_price_pct: f64,
+    pub add2_drawdown_pct: f64,
+    pub tp1_pct: f64,
+    pub tp2_pct: f64,
+    pub stop_loss_pct: f64,
+    pub move_stop_trigger_pct: f64,
+    pub move_stop_lock_profit_pct: f64,
+    pub event_cooldown_seconds: u64,
+    pub max_add_count: u32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -55,6 +116,37 @@ pub struct HugeMomentumModuleConfig {
     pub pending_valid_seconds: u64,
     #[serde(default = "default_cooldown_seconds")]
     pub cooldown_seconds: u64,
+    // ── order management ───────────────────────────────────────────────────
+    /// Total USDT budget for a full position (0 = order management disabled).
+    #[serde(default)]
+    pub order_usdt: f64,
+    /// Price must rise this fraction above entry before add-on #1 (30%). Default 5%.
+    #[serde(default = "default_add1_price_pct")]
+    pub add1_price_pct: f64,
+    /// Price must drop this fraction from the highest point before add-on #2 (40%). Default 5%.
+    #[serde(default = "default_add2_drawdown_pct")]
+    pub add2_drawdown_pct: f64,
+    /// Take-profit #1: close 50% of position when price rises this much above avg cost. Default 15%.
+    #[serde(default = "default_tp1_pct")]
+    pub tp1_pct: f64,
+    /// Take-profit #2: close another 30% (of peak) when price rises this much. Default 20%.
+    #[serde(default = "default_tp2_pct")]
+    pub tp2_pct: f64,
+    /// Stop-loss: close all when price falls this fraction below initial entry. Default 8%.
+    #[serde(default = "default_stop_loss_pct")]
+    pub stop_loss_pct: f64,
+    /// Move stop trigger: after price rises this fraction from entry, move stop up. Default 10%.
+    #[serde(default = "default_move_stop_trigger_pct")]
+    pub move_stop_trigger_pct: f64,
+    /// Locked-profit stop: move stop to entry * (1 + this fraction). Default 3%.
+    #[serde(default = "default_move_stop_lock_profit_pct")]
+    pub move_stop_lock_profit_pct: f64,
+    /// Rule event cooldown in seconds (dedupe for jitter). Default 3s.
+    #[serde(default = "default_event_cooldown_seconds")]
+    pub event_cooldown_seconds: u64,
+    /// Maximum number of add-on buys allowed per position. Default 2.
+    #[serde(default = "default_max_add_count")]
+    pub max_add_count: u32,
 }
 
 fn default_tf_24h_qty_value_threshold() -> f64 {
@@ -81,6 +173,33 @@ fn default_pending_valid_seconds() -> u64 {
 fn default_cooldown_seconds() -> u64 {
     45 * 60
 }
+fn default_add1_price_pct() -> f64 {
+    0.05
+}
+fn default_add2_drawdown_pct() -> f64 {
+    0.05
+}
+fn default_tp1_pct() -> f64 {
+    0.10
+}
+fn default_tp2_pct() -> f64 {
+    0.20
+}
+fn default_stop_loss_pct() -> f64 {
+    0.08
+}
+fn default_move_stop_trigger_pct() -> f64 {
+    0.10
+}
+fn default_move_stop_lock_profit_pct() -> f64 {
+    0.03
+}
+fn default_event_cooldown_seconds() -> u64 {
+    3
+}
+fn default_max_add_count() -> u32 {
+    2
+}
 
 impl Default for HugeMomentumModuleConfig {
     fn default() -> Self {
@@ -93,6 +212,16 @@ impl Default for HugeMomentumModuleConfig {
             confirm_score_threshold: default_confirm_score_threshold(),
             pending_valid_seconds: default_pending_valid_seconds(),
             cooldown_seconds: default_cooldown_seconds(),
+            order_usdt: 0.0,
+            add1_price_pct: default_add1_price_pct(),
+            add2_drawdown_pct: default_add2_drawdown_pct(),
+            tp1_pct: default_tp1_pct(),
+            tp2_pct: default_tp2_pct(),
+            stop_loss_pct: default_stop_loss_pct(),
+            move_stop_trigger_pct: default_move_stop_trigger_pct(),
+            move_stop_lock_profit_pct: default_move_stop_lock_profit_pct(),
+            event_cooldown_seconds: default_event_cooldown_seconds(),
+            max_add_count: default_max_add_count(),
         }
     }
 }
@@ -113,6 +242,16 @@ impl Default for HugeMomentumSignalCtx {
             pending_valid_seconds: 15 * 60,
             cooldown_seconds: 45 * 60,
             symbol_contexts: HashMap::new(),
+            order_usdt: 0.0,
+            add1_price_pct: default_add1_price_pct(),
+            add2_drawdown_pct: default_add2_drawdown_pct(),
+            tp1_pct: default_tp1_pct(),
+            tp2_pct: default_tp2_pct(),
+            stop_loss_pct: default_stop_loss_pct(),
+            move_stop_trigger_pct: default_move_stop_trigger_pct(),
+            move_stop_lock_profit_pct: default_move_stop_lock_profit_pct(),
+            event_cooldown_seconds: default_event_cooldown_seconds(),
+            max_add_count: default_max_add_count(),
         }
     }
 }
@@ -131,6 +270,8 @@ struct Aggregated5mBar {
 pub struct HugeMomentumSignalModule {
     pub cfg: HugeMomentumSignalCtx,
     pub last_check_second: u64,
+    order_tx: Option<UnboundedSender<OrderRequest>>,
+    order_seq: u64,
 }
 
 impl Default for HugeMomentumSignalModule {
@@ -138,6 +279,8 @@ impl Default for HugeMomentumSignalModule {
         Self {
             cfg: HugeMomentumSignalCtx::default(),
             last_check_second: 0,
+            order_tx: None,
+            order_seq: 0,
         }
     }
 }
@@ -153,11 +296,29 @@ impl HugeMomentumSignalModule {
         ctx.confirm_score_threshold = config.confirm_score_threshold;
         ctx.pending_valid_seconds = config.pending_valid_seconds;
         ctx.cooldown_seconds = config.cooldown_seconds;
+        ctx.order_usdt = config.order_usdt;
+        ctx.add1_price_pct = config.add1_price_pct;
+        ctx.add2_drawdown_pct = config.add2_drawdown_pct;
+        ctx.tp1_pct = config.tp1_pct;
+        ctx.tp2_pct = config.tp2_pct;
+        ctx.stop_loss_pct = config.stop_loss_pct;
+        ctx.move_stop_trigger_pct = config.move_stop_trigger_pct;
+        ctx.move_stop_lock_profit_pct = config.move_stop_lock_profit_pct;
+        ctx.event_cooldown_seconds = config.event_cooldown_seconds;
+        ctx.max_add_count = config.max_add_count;
 
         Self {
             cfg: ctx,
             last_check_second: 0,
+            order_tx: None,
+            order_seq: 0,
         }
+    }
+
+    /// Attach an order channel.  Call this before starting the module.
+    pub fn with_order_tx(mut self, tx: UnboundedSender<OrderRequest>) -> Self {
+        self.order_tx = Some(tx);
+        self
     }
 
     fn now_seconds() -> u64 {
@@ -165,6 +326,410 @@ impl HugeMomentumSignalModule {
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_secs())
             .unwrap_or(0)
+    }
+
+    fn now_millis() -> u128 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or(0)
+    }
+
+    fn make_event_id(rule: &str, symbol: &str) -> String {
+        format!(
+            "hm_evt_{}_{}_{}",
+            rule,
+            symbol.to_lowercase(),
+            Self::now_millis()
+        )
+    }
+
+    fn can_fire_rule(
+        symbol_ctx: &HugeMomentumSymbolContext,
+        rule: &str,
+        now_second: u64,
+        cooldown_seconds: u64,
+    ) -> bool {
+        let Some(last) = symbol_ctx.rule_events.get(rule) else {
+            return true;
+        };
+        now_second >= last.fired_second.saturating_add(cooldown_seconds)
+    }
+
+    fn mark_rule_fired(
+        symbol_ctx: &mut HugeMomentumSymbolContext,
+        rule: &str,
+        now_second: u64,
+        event_id: String,
+    ) {
+        symbol_ctx.rule_events.insert(
+            rule.to_owned(),
+            HugeMomentumRuleEvent {
+                event_id,
+                fired_second: now_second,
+            },
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Order management helpers
+    // -----------------------------------------------------------------------
+
+    fn next_order_id(&mut self) -> u64 {
+        self.order_seq += 1;
+        self.order_seq
+    }
+
+    fn submit_order(&self, req: OrderRequest) {
+        if let Some(tx) = &self.order_tx {
+            if tx.send(req).is_err() {
+                tracing::error!(strategy = %self.cfg.name, "failed to send order: channel closed");
+            }
+        }
+    }
+
+    /// Place a market BUY for `qty` base units.
+    fn place_market_buy(&mut self, symbol: &str, qty: f64, tag: &str) {
+        if qty <= 0.0 || !qty.is_finite() {
+            return;
+        }
+        let seq = self.next_order_id();
+        let cid = format!("hm_buy_{}_{}", tag, seq);
+        let req = OrderRequest {
+            client_order_id: cid.clone(),
+            symbol: symbol.to_owned(),
+            side: PositionSide::Long,
+            order_type: FrameOrderType::Market,
+            price: 0.0,
+            stop_price: 0.0,
+            qty,
+            reduce_only: false,
+            close_position: false,
+            good_till_date: 0,
+            strategy_id: self.cfg.id,
+            origin_client_order_id: None,
+        };
+        tracing::info!(
+            strategy = %self.cfg.name, symbol, qty, tag,
+            client_order_id = %cid, "HugeMomentum: market BUY"
+        );
+        self.submit_order(req);
+    }
+
+    /// Place a market SELL (reduce-only) for `qty` base units.
+    fn place_market_sell(&mut self, symbol: &str, qty: f64, tag: &str) {
+        if qty <= 0.0 || !qty.is_finite() {
+            return;
+        }
+        let seq = self.next_order_id();
+        let cid = format!("hm_sell_{}_{}", tag, seq);
+        let req = OrderRequest {
+            client_order_id: cid.clone(),
+            symbol: symbol.to_owned(),
+            side: PositionSide::Short,
+            order_type: FrameOrderType::Market,
+            price: 0.0,
+            stop_price: 0.0,
+            qty,
+            reduce_only: true,
+            close_position: false,
+            good_till_date: 0,
+            strategy_id: self.cfg.id,
+            origin_client_order_id: None,
+        };
+        tracing::info!(
+            strategy = %self.cfg.name, symbol, qty, tag,
+            client_order_id = %cid, "HugeMomentum: market SELL"
+        );
+        self.submit_order(req);
+    }
+
+    /// Open the initial position (30% of budget) when a signal fires.
+    fn open_initial_position(&mut self, symbol: &str, price: f64) {
+        let order_usdt = self.cfg.order_usdt;
+        if order_usdt <= 0.0 || price <= 0.0 {
+            return;
+        }
+        let qty = (order_usdt * 0.30) / price;
+        let sym_ctx = self
+            .cfg
+            .symbol_contexts
+            .entry(symbol.to_owned())
+            .or_insert_with(|| HugeMomentumSymbolContext {
+                symbol: symbol.to_owned(),
+                ..HugeMomentumSymbolContext::default()
+            });
+
+        // Reset position state.
+        sym_ctx.position = HugeMomentumPositionState {
+            active: true,
+            entry_price: price,
+            avg_cost: price,
+            total_qty: qty,
+            peak_qty: 0.0,
+            highest_price: price,
+            initial_done: true,
+            add1_done: false,
+            add2_done: false,
+            tp1_done: false,
+            tp2_done: false,
+            tp3_done: false,
+            move_stop_done: false,
+            stop_price: price * (1.0 - self.cfg.stop_loss_pct),
+            add_count: 0,
+        };
+        sym_ctx.rule_events.clear();
+
+        tracing::info!(
+            strategy = %self.cfg.name, symbol, price, qty,
+            "HugeMomentum: opening initial position (30%)"
+        );
+        self.place_market_buy(symbol, qty, "init");
+    }
+
+    /// Process an incoming price tick for any active position on `symbol`.
+    fn manage_position(&mut self, symbol: &str, price: f64) {
+        if price <= 0.0 || !price.is_finite() {
+            return;
+        }
+        // Grab config values first to avoid borrow conflict later.
+        let order_usdt = self.cfg.order_usdt;
+        if order_usdt <= 0.0 {
+            return;
+        }
+        let add1_pct = self.cfg.add1_price_pct;
+        let add2_pct = self.cfg.add2_drawdown_pct;
+        let tp1_pct = self.cfg.tp1_pct;
+        let tp2_pct = self.cfg.tp2_pct;
+        let sl_pct = self.cfg.stop_loss_pct;
+        let move_stop_trigger_pct = self.cfg.move_stop_trigger_pct;
+        let move_stop_lock_profit_pct = self.cfg.move_stop_lock_profit_pct;
+        let event_cooldown_seconds = self.cfg.event_cooldown_seconds;
+        let max_add_count = self.cfg.max_add_count;
+        let now_second = Self::now_seconds();
+
+        let sym_ctx = match self.cfg.symbol_contexts.get_mut(symbol) {
+            Some(c) => c,
+            None => return,
+        };
+        if !sym_ctx.position.active {
+            return;
+        }
+
+        // Update highest price.
+        if price > sym_ctx.position.highest_price {
+            sym_ctx.position.highest_price = price;
+        }
+
+        let entry = sym_ctx.position.entry_price;
+        let avg_cost = sym_ctx.position.avg_cost;
+        let highest = sym_ctx.position.highest_price;
+
+        // ── Move stop: after configured gain from entry, raise stop to entry + lock-profit ───
+        if !sym_ctx.position.move_stop_done
+            && price >= entry * (1.0 + move_stop_trigger_pct)
+            && Self::can_fire_rule(sym_ctx, "move_stop", now_second, event_cooldown_seconds)
+        {
+            let event_id = Self::make_event_id("move_stop", symbol);
+            Self::mark_rule_fired(sym_ctx, "move_stop", now_second, event_id.clone());
+            let moved_stop = entry * (1.0 + move_stop_lock_profit_pct);
+            if moved_stop > sym_ctx.position.stop_price {
+                sym_ctx.position.stop_price = moved_stop;
+            }
+            sym_ctx.position.move_stop_done = true;
+            tracing::info!(
+                strategy = %self.cfg.name, symbol, price, entry,
+                moved_stop = sym_ctx.position.stop_price,
+                event_id = %event_id,
+                move_stop_trigger_pct,
+                move_stop_lock_profit_pct,
+                "HugeMomentum: move stop activated, stop moved above entry"
+            );
+        }
+
+        // ── Stop-loss ────────────────────────────────────────────────────
+        if price <= sym_ctx.position.stop_price
+            && Self::can_fire_rule(sym_ctx, "sl", now_second, event_cooldown_seconds)
+        {
+            let event_id = Self::make_event_id("sl", symbol);
+            Self::mark_rule_fired(sym_ctx, "sl", now_second, event_id.clone());
+            let qty = sym_ctx.position.total_qty;
+            sym_ctx.position.total_qty = 0.0;
+            sym_ctx.position.active = false;
+            tracing::warn!(
+                strategy = %self.cfg.name, symbol, price, entry,
+                stop_price = sym_ctx.position.stop_price, qty, event_id = %event_id,
+                "HugeMomentum: stop-loss, closing all"
+            );
+            self.place_market_sell(symbol, qty, "sl");
+            return;
+        }
+
+        // ── Price doubled ────────────────────────────────────────────────
+        if price >= entry * 2.0
+            && Self::can_fire_rule(sym_ctx, "x2", now_second, event_cooldown_seconds)
+        {
+            let event_id = Self::make_event_id("x2", symbol);
+            Self::mark_rule_fired(sym_ctx, "x2", now_second, event_id.clone());
+            let qty = sym_ctx.position.total_qty;
+            sym_ctx.position.total_qty = 0.0;
+            sym_ctx.position.active = false;
+            tracing::info!(
+                strategy = %self.cfg.name, symbol, price, entry,
+                event_id = %event_id,
+                "HugeMomentum: price doubled, closing all"
+            );
+            self.place_market_sell(symbol, qty, "x2");
+            return;
+        }
+
+        // ── TP3: returned to avg cost (after TP2) ────────────────────────
+        if sym_ctx.position.tp2_done
+            && !sym_ctx.position.tp3_done
+            && price <= avg_cost
+            && Self::can_fire_rule(sym_ctx, "tp3", now_second, event_cooldown_seconds)
+        {
+            let event_id = Self::make_event_id("tp3", symbol);
+            Self::mark_rule_fired(sym_ctx, "tp3", now_second, event_id.clone());
+            let qty = sym_ctx.position.total_qty;
+            sym_ctx.position.tp3_done = true;
+            sym_ctx.position.total_qty = 0.0;
+            sym_ctx.position.active = false;
+            tracing::info!(
+                strategy = %self.cfg.name, symbol, price, avg_cost,
+                event_id = %event_id,
+                "HugeMomentum: TP3, price back to cost, closing remaining"
+            );
+            self.place_market_sell(symbol, qty, "tp3");
+            return;
+        }
+
+        // ── TP2: +20% above avg cost ─────────────────────────────────────
+        if sym_ctx.position.tp1_done
+            && !sym_ctx.position.tp2_done
+            && price >= avg_cost * (1.0 + tp2_pct)
+            && Self::can_fire_rule(sym_ctx, "tp2", now_second, event_cooldown_seconds)
+        {
+            let event_id = Self::make_event_id("tp2", symbol);
+            Self::mark_rule_fired(sym_ctx, "tp2", now_second, event_id.clone());
+            // Close 30% of peak_qty.
+            let sell_qty = (sym_ctx.position.peak_qty * 0.30).min(sym_ctx.position.total_qty);
+            let new_total = (sym_ctx.position.total_qty - sell_qty).max(0.0);
+            sym_ctx.position.tp2_done = true;
+            sym_ctx.position.total_qty = new_total;
+            if new_total <= 0.0 {
+                sym_ctx.position.active = false;
+            }
+            tracing::info!(
+                strategy = %self.cfg.name, symbol, price, sell_qty, remaining = new_total,
+                event_id = %event_id,
+                "HugeMomentum: TP2 (+20%), selling 30% of peak"
+            );
+            self.place_market_sell(symbol, sell_qty, "tp2");
+            return;
+        }
+
+        // ── TP1: +15% above avg cost ─────────────────────────────────────
+        if !sym_ctx.position.tp1_done
+            && price >= avg_cost * (1.0 + tp1_pct)
+            && Self::can_fire_rule(sym_ctx, "tp1", now_second, event_cooldown_seconds)
+        {
+            let event_id = Self::make_event_id("tp1", symbol);
+            Self::mark_rule_fired(sym_ctx, "tp1", now_second, event_id.clone());
+            let sell_qty = sym_ctx.position.total_qty * 0.50;
+            let new_total = sym_ctx.position.total_qty - sell_qty;
+            sym_ctx.position.peak_qty = sym_ctx.position.total_qty; // record peak
+            sym_ctx.position.tp1_done = true;
+            sym_ctx.position.total_qty = new_total;
+            tracing::info!(
+                strategy = %self.cfg.name, symbol, price, sell_qty, remaining = new_total,
+                event_id = %event_id,
+                "HugeMomentum: TP1 (+15%), selling half"
+            );
+            self.place_market_sell(symbol, sell_qty, "tp1");
+            return;
+        }
+
+        // ── Add-on #2: drawdown from high ────────────────────────────────
+        if !sym_ctx.position.add2_done
+            && sym_ctx.position.add_count < max_add_count
+            && highest > 0.0
+            && price <= highest * (1.0 - add2_pct)
+            && Self::can_fire_rule(sym_ctx, "add2", now_second, event_cooldown_seconds)
+        {
+            let event_id = Self::make_event_id("add2", symbol);
+            Self::mark_rule_fired(sym_ctx, "add2", now_second, event_id.clone());
+            let max_qty = order_usdt / entry; // rough max in base asset
+            let add_qty =
+                ((order_usdt * 0.40) / price).min((max_qty - sym_ctx.position.total_qty).max(0.0));
+            sym_ctx.position.add2_done = true;
+            if add_qty > 0.0 {
+                let prev_value = sym_ctx.position.avg_cost * sym_ctx.position.total_qty;
+                sym_ctx.position.total_qty += add_qty;
+                sym_ctx.position.add_count = sym_ctx.position.add_count.saturating_add(1);
+                sym_ctx.position.avg_cost =
+                    (prev_value + price * add_qty) / sym_ctx.position.total_qty;
+                tracing::info!(
+                    strategy = %self.cfg.name,
+                    symbol,
+                    price,
+                    add_qty,
+                    highest,
+                    add_count = sym_ctx.position.add_count,
+                    max_add_count,
+                    event_id = %event_id,
+                    "HugeMomentum: add-on #2 (drawdown from high)"
+                );
+                self.place_market_buy(symbol, add_qty, "add2");
+            }
+            return;
+        }
+
+        // ── Add-on #1: +5% from entry ────────────────────────────────────
+        if !sym_ctx.position.add1_done
+            && sym_ctx.position.add_count < max_add_count
+            && price >= entry * (1.0 + add1_pct)
+            && Self::can_fire_rule(sym_ctx, "add1", now_second, event_cooldown_seconds)
+        {
+            let event_id = Self::make_event_id("add1", symbol);
+            Self::mark_rule_fired(sym_ctx, "add1", now_second, event_id.clone());
+            let max_qty = order_usdt / entry;
+            let add_qty =
+                ((order_usdt * 0.30) / price).min((max_qty - sym_ctx.position.total_qty).max(0.0));
+            sym_ctx.position.add1_done = true;
+            if add_qty > 0.0 {
+                let prev_value = sym_ctx.position.avg_cost * sym_ctx.position.total_qty;
+                sym_ctx.position.total_qty += add_qty;
+                sym_ctx.position.add_count = sym_ctx.position.add_count.saturating_add(1);
+                sym_ctx.position.avg_cost =
+                    (prev_value + price * add_qty) / sym_ctx.position.total_qty;
+                tracing::info!(
+                    strategy = %self.cfg.name,
+                    symbol,
+                    price,
+                    add_qty,
+                    add_count = sym_ctx.position.add_count,
+                    max_add_count,
+                    event_id = %event_id,
+                    "HugeMomentum: add-on #1 (+5% from entry)"
+                );
+                self.place_market_buy(symbol, add_qty, "add1");
+            }
+            return;
+        }
+
+        let _ = (
+            add1_pct,
+            add2_pct,
+            tp1_pct,
+            tp2_pct,
+            sl_pct,
+            move_stop_trigger_pct,
+            move_stop_lock_profit_pct,
+            event_cooldown_seconds,
+            max_add_count,
+            highest,
+        );
     }
 
     fn safe_div(numerator: f64, denominator: f64) -> f64 {
@@ -285,8 +850,7 @@ impl HugeMomentumSignalModule {
             );
             return None;
         } else {
-        
-           for (i, item) in recent_minutes.iter().enumerate().rev() {
+            for (i, item) in recent_minutes.iter().enumerate().rev() {
                 tracing::trace!(
                     "T({}): price={}, qty={}, open={}, close={}, high={}, low={}, second={}",
                     i,
@@ -371,12 +935,6 @@ impl HugeMomentumSignalModule {
             "huge momentum ignite evaluation"
         );
 
-        // let tf_24h_qty = tw.hours_window.tf_total_qty;
-        // let tf_24h_value = tw.hours_window.tf_total_value;
-        // if tf_24h_value < self.cfg.tf_24h_qty_value_threshold || tf_24h_qty <= 0.0 {
-        //    return None;
-        // }
-
         let symbol_ctx = self
             .cfg
             .symbol_contexts
@@ -457,7 +1015,12 @@ impl HugeMomentumSignalModule {
         let mut count = 0_usize;
         for i in start..=end {
             let item = tw.get_target_closed_minute_price_qty(-(i as i32));
-            tracing::trace!("compute_vol_base i={} item={:#?} end={}", i, item.clone(), end);
+            tracing::trace!(
+                "compute_vol_base i={} item={:#?} end={}",
+                i,
+                item.clone(),
+                end
+            );
             count += 1;
             if !Self::valid_kline(&item) || item.qty <= 0.0 || !item.qty.is_finite() {
                 continue;
@@ -551,7 +1114,34 @@ impl StrategyModule for HugeMomentumSignalModule {
                 message = %signal.format(),
                 "huge momentum signal triggered"
             );
+            // Open initial position (30% of budget) at the signal candle close.
+            let entry_price = signal.latest_5m_ohlc[2][3]; // b3 close
+            self.open_initial_position(&candle.symbol, entry_price);
         }
+    }
+
+    fn handle_best_bid_ask(&mut self, _ctx: &mut StrategyContext, bba: &BestBidAskItem) {
+        if !self.cfg.started {
+            return;
+        }
+        if self.cfg.order_usdt <= 0.0 {
+            return;
+        }
+        // Use mid-price for position management checks.
+        let price = (bba.best_bid_price + bba.best_ask_price) / 2.0;
+        if price <= 0.0 || !price.is_finite() {
+            return;
+        }
+        let has_position = self
+            .cfg
+            .symbol_contexts
+            .get(&bba.symbol)
+            .map(|c| c.position.active)
+            .unwrap_or(false);
+        if !has_position {
+            return;
+        }
+        self.manage_position(&bba.symbol, price);
     }
 }
 
@@ -699,6 +1289,7 @@ mod tests {
             confirm_score_threshold: 2.2,
             pending_valid_seconds: 15 * 60,
             cooldown_seconds: 45 * 60,
+            ..HugeMomentumModuleConfig::default()
         });
 
         let rows_1h = load_fixture_rows("ALTUSDT.candle_1h");
@@ -723,11 +1314,10 @@ mod tests {
         let mut check_calls = 0usize;
         let mut signal_hits = 0usize;
         for row in &rows_1m {
-
             let kline = build_kline(symbol, UhfKlineInterval::M1, row);
             trade_window.update_kline(kline.clone());
             tracing::debug!("update kline_1m: {:#?}", kline);
-            
+
             check_calls += 1;
             if module.check(symbol, &trade_window).is_some() {
                 signal_hits += 1;
@@ -741,4 +1331,3 @@ mod tests {
         );
     }
 }
-

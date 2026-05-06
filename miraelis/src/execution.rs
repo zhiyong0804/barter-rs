@@ -482,7 +482,7 @@ fn build_ws_order_payload(
     }
 
     if order.reduce_only {
-        params.insert("reduceOnly".to_owned(), "true".to_owned());
+         params.insert("reduceOnly".to_owned(), "true".to_owned());
     }
     if order.side == PositionSide::Short {
         params.insert("positionSide".to_owned(), "SHORT".to_owned());
@@ -537,7 +537,7 @@ fn build_ws_order_payload(
         ws_params.insert("stopPrice".to_owned(), Value::String(v.clone()));
     }
     if let Some(v) = params.get("reduceOnly") {
-        ws_params.insert("reduceOnly".to_owned(), Value::String(v.clone()));
+         ws_params.insert("reduceOnly".to_owned(), Value::String(v.clone()));
     }
     if let Some(v) = params.get("positionSide") {
         ws_params.insert("positionSide".to_owned(), Value::String(v.clone()));
@@ -761,4 +761,3 @@ fn normalize_qty(qty: f64, step_size: f64, precision: i32) -> f64 {
     let factor = 10f64.powi(precision.max(0));
     (stepped * factor).floor() / factor
 }
-

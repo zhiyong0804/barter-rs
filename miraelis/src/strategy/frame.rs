@@ -139,6 +139,7 @@ pub enum OrderResponseAction {
 pub struct FrameOrderContext {
     pub symbol: String,
     pub trigger: u64,
+    pub exit: u64,
     pub last_query_time: u64,
     pub open: f64,
     pub price_precision: i32,
@@ -177,6 +178,7 @@ impl FrameOrderContext {
         Self {
             symbol,
             trigger: 0,
+            exit: 0,
             last_query_time: 0,
             open: 0.0,
             price_precision: 7,
@@ -245,6 +247,10 @@ pub struct FrameModuleConfig {
     pub shadow_qty_times: f64,
     #[serde(default = "default_order_base_qty")]
     pub order_base_qty: f64,
+
+    /// 开仓信号冷却秒数（同一 symbol 在平仓后也需要等待），默认 60s
+    #[serde(default = "default_cooldown_seconds")]
+    pub cooldown_seconds: u64,
 
     // ------ spike burst (集体下插针做空) ------
     /// 检测窗口秒数，默认 6s
@@ -326,6 +332,10 @@ fn default_order_base_qty() -> f64 {
     100.0
 }
 
+fn default_cooldown_seconds() -> u64 {
+    60
+}
+
 impl Default for FrameModuleConfig {
     fn default() -> Self {
         Self {
@@ -349,6 +359,7 @@ impl Default for FrameModuleConfig {
             spike_burst_half_close_percent: default_spike_burst_half_close_percent(),
             spike_burst_full_close_percent: default_spike_burst_full_close_percent(),
             spike_detect_lower_wick_percent: default_spike_detect_lower_wick_percent(),
+            cooldown_seconds: default_cooldown_seconds(),
         }
     }
 }
@@ -1301,7 +1312,9 @@ impl FrameSignalModule {
             && prev2.qty > avg_sec_vol * octx.signal_qty_times;
         let price_move_3s_pct = Self::safe_div(trade.price - prev2.open, prev2.open);
 
-        if trade.event_time > octx.trigger + 1_000 && !octx.has_position() {
+        let cooldown_ms = self.cfg.config.cooldown_seconds.saturating_mul(1_000);
+
+        if trade.event_time > octx.trigger + cooldown_ms && !octx.has_position() {
             let mut short_signal = vol_3s > avg_sec_vol * 3.0 * octx.signal_qty_times
                 && is_accelerating
                 && price_move_3s_pct > octx.signal_price_percent;
@@ -1435,9 +1448,12 @@ impl FrameSignalModule {
             let timeout_exit = octx.keep_position_seconds > 0
                 && trade.event_time
                     > open_order.open_event_time + (octx.keep_position_seconds as u64 * 1_000);
+            let cooldown_ms = self.cfg.config.cooldown_seconds.saturating_mul(1_000);
 
             if (should_stop || should_reversal || should_exhaust || timeout_exit)
                 && !open_order.has_stop_close_order
+                && octx.open_order.is_some()
+                && (trade.event_time > octx.exit + cooldown_ms)
             {
                 let signal = Self::build_exit_signal(
                     &strategy_name,
@@ -1459,6 +1475,7 @@ impl FrameSignalModule {
                     "frame signal triggered"
                 );
 
+                octx.exit = trade.event_time;
                 Self::reduce_position(octx, trade, strategy_id, order_seq, order_tx, &open_order);
                 return;
             }
@@ -1600,4 +1617,3 @@ fn normalize_percent(value: f64) -> f64 {
         value
     }
 }
-

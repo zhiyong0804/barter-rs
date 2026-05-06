@@ -135,15 +135,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (order_response_tx, mut order_response_rx) = tokio::sync::mpsc::unbounded_channel();
 
     let frame_module = if config.execution_cfg.enabled {
-        FrameSignalModule::with_config(config.frame_cfg.clone()).with_order_tx(order_tx)
+        FrameSignalModule::with_config(config.frame_cfg.clone()).with_order_tx(order_tx.clone())
     } else {
         FrameSignalModule::with_config(config.frame_cfg.clone())
     };
 
+    let huge_module = if config.execution_cfg.enabled {
+        HugeMomentumSignalModule::with_config(config.huge_momentum_cfg.clone()).with_order_tx(order_tx.clone())
+    } else {
+        HugeMomentumSignalModule::with_config(config.huge_momentum_cfg.clone())
+    };
+
     engine.register(Box::new(frame_module));
-    engine.register(Box::new(HugeMomentumSignalModule::with_config(
-        config.huge_momentum_cfg.clone(),
-    )));
+    engine.register(Box::new(huge_module));
     engine.init_all()?;
     engine.start_all()?;
 
