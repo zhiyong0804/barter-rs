@@ -7,20 +7,20 @@ use crate::{
     user_data_stream::run_user_data_stream,
 };
 use barter::logging::init_logging;
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, env, sync::Arc};
 use tokio::sync::{mpsc, RwLock};
 use tracing::{error, info, warn};
 
 pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     init_logging();
 
-    let config = load_config("risk/config.json")?;
+    let config_path = parse_config_path_from_args()?;
+    let config = load_config(&config_path)?;
+    info!(config_path = %config_path, "risk config loaded");
     validate_config(&config)?;
 
-    let credentials = BinanceCredentials::from_env_names(
-        &config.binance.api_key_env,
-        &config.binance.api_secret_env,
-    )?;
+    let credentials =
+        BinanceCredentials::from_config(&config.binance.api_key, &config.binance.api_secret)?;
     let client = BinanceFuturesRestClient::new(&config.binance, credentials)?;
 
     let initial_account = client.fetch_account_information().await?;
@@ -108,6 +108,25 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     user_stream_task.abort();
 
     Ok(())
+}
+
+fn parse_config_path_from_args() -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let mut args = env::args().skip(1);
+    let mut config_path = "risk/config.json".to_owned();
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-c" | "--config" => {
+                let Some(path) = args.next() else {
+                    return Err("missing config path after -c/--config".into());
+                };
+                config_path = path;
+            }
+            _ => {}
+        }
+    }
+
+    Ok(config_path)
 }
 
 fn validate_config(config: &AppConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

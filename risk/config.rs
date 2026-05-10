@@ -18,10 +18,8 @@ pub struct BinanceConfig {
     pub rest_base_url: String,
     #[serde(default = "default_ws_base_url")]
     pub ws_base_url: String,
-    #[serde(default = "default_api_key_env")]
-    pub api_key_env: String,
-    #[serde(default = "default_api_secret_env")]
-    pub api_secret_env: String,
+    pub api_key: String,
+    pub api_secret: String,
     #[serde(default = "default_recv_window_ms")]
     pub recv_window_ms: u64,
     #[serde(default = "default_listen_key_keepalive_secs")]
@@ -95,14 +93,6 @@ fn default_rest_base_url() -> String {
 
 fn default_ws_base_url() -> String {
     "wss://fstream.binance.com".to_owned()
-}
-
-fn default_api_key_env() -> String {
-    "BINANCE_API_KEY".to_owned()
-}
-
-fn default_api_secret_env() -> String {
-    "BINANCE_API_SECRET".to_owned()
 }
 
 fn default_recv_window_ms() -> u64 {
