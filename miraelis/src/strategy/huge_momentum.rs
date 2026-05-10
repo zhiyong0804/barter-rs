@@ -426,7 +426,7 @@ impl HugeMomentumSignalModule {
         let req = OrderRequest {
             client_order_id: cid.clone(),
             symbol: symbol.to_owned(),
-            side: PositionSide::Short,
+            side: PositionSide::Long,
             order_type: FrameOrderType::Market,
             price: 0.0,
             stop_price: 0.0,

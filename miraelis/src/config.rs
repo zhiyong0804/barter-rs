@@ -19,6 +19,7 @@ use crate::execution::ExecutionConfig;
 use crate::signal::SignalTypeChatIds;
 use crate::strategy::frame::FrameModuleConfig;
 use crate::strategy::huge_momentum::HugeMomentumModuleConfig;
+use crate::strategy::rocket::RocketModuleConfig;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
@@ -48,6 +49,8 @@ pub struct AppConfig {
     pub huge_momentum_cfg: HugeMomentumModuleConfig,
     #[serde(default)]
     pub frame_cfg: FrameModuleConfig,
+    #[serde(default)]
+    pub rocket_cfg: RocketModuleConfig,
     #[serde(default)]
     pub execution_cfg: ExecutionConfig,
 }

@@ -1,0 +1,17 @@
+{
+  "rocket_cfg": {
+    "symbols": ["*"],
+    "excluded_symbols": ["USDC"],
+    "volume_multiplier_threshold": 10.0,
+    "volume_multiplier_extreme": 20.0,
+    "entity_ratio_threshold": 0.5,
+    "lookback_seconds": 45,
+    "lookback_minutes": 10,
+    "cooldown_seconds": 300,
+    "max_second_gap": 45,
+    "min_price_increase_ratio": 0.01,
+    "max_volume_price_increase_ratio": 0.03,
+    "order_usdt": 10.0,
+    "enable": true
+  }
+}

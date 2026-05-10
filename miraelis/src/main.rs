@@ -13,8 +13,8 @@ mod execution;
 mod quotation;
 mod signal;
 mod strategy;
-use crate::quotation::writer::AsyncRollbackWriter;
 use crate::quotation::FutureQuotation;
+use crate::{quotation::writer::AsyncRollbackWriter, strategy::rocket::RocketSignalModule};
 use execution::start_execution_tasks;
 use signal::{SignalType, TelegramNotifier};
 use strategy::frame::FrameSignalModule;
@@ -141,13 +141,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
 
     let huge_module = if config.execution_cfg.enabled {
-        HugeMomentumSignalModule::with_config(config.huge_momentum_cfg.clone()).with_order_tx(order_tx.clone())
+        HugeMomentumSignalModule::with_config(config.huge_momentum_cfg.clone())
+            .with_order_tx(order_tx.clone())
     } else {
         HugeMomentumSignalModule::with_config(config.huge_momentum_cfg.clone())
     };
 
+    let rocket_module = if config.execution_cfg.enabled {
+        RocketSignalModule::with_config(config.rocket_cfg.clone()).with_order_tx(order_tx.clone())
+    } else {
+        RocketSignalModule::with_config(config.rocket_cfg.clone())
+    };
+
     engine.register(Box::new(frame_module));
     engine.register(Box::new(huge_module));
+    engine.register(Box::new(rocket_module));
     engine.init_all()?;
     engine.start_all()?;
 
@@ -228,4 +236,3 @@ fn build_telegram_notifier(config: &AppConfig) -> Result<Arc<TelegramNotifier>> 
         config.telegram_signal_chat_ids.clone(),
     )))
 }
-

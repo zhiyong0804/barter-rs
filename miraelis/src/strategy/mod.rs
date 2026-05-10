@@ -7,6 +7,7 @@ use crate::strategy::frame::OrderResponse;
 
 pub mod frame;
 pub mod huge_momentum;
+pub mod rocket;
 
 // ---------------------------------------------------------------------------
 // Market event — typed payload passed to dispatch()
@@ -230,4 +231,3 @@ pub mod module_id {
     pub const HUGE_MOMENTUM_SIGNAL: u64 = 6;
     pub const FRAME_NEEDLE: u64 = 7;
 }
-
