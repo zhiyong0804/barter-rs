@@ -10,7 +10,7 @@ use barter_data::{
     },
     subscription::{
         book::OrderBooksL1, candle_1h::Candles1h, candle_1m::Candles1m, liquidation::Liquidations,
-        ticker::Tickers24hr, trade::PublicTrades,
+        ticker::Tickers24hr, trade::AggregatePublicTrades,
     },
 };
 use barter_instrument::instrument::market_data::kind::MarketDataInstrumentKind;
@@ -70,16 +70,16 @@ impl FutureQuotation {
 
         let mut builder = Streams::builder_multi();
         for group in &symbol_groups {
-            let trade_subs = group
+            let agg_trade_subs = group
                 .iter()
                 .map(|item| {
                     (
-                        format!("{}|trade", item.symbol),
+                        format!("{}|agg_trade", item.symbol),
                         BinanceFuturesUsdPublic::default(),
                         item.base.clone(),
                         item.quote.clone(),
                         MarketDataInstrumentKind::Perpetual,
-                        PublicTrades,
+                        AggregatePublicTrades,
                     )
                 })
                 .collect::<Vec<_>>();
@@ -155,7 +155,7 @@ impl FutureQuotation {
                 .collect::<Vec<_>>();
 
             builder = builder
-                .add(Streams::<PublicTrades>::builder().subscribe(trade_subs))
+                .add(Streams::<AggregatePublicTrades>::builder().subscribe(agg_trade_subs))
                 .add(Streams::<Candles1m>::builder().subscribe(candle_1m_subs))
                 .add(Streams::<Candles1h>::builder().subscribe(candle_1h_subs))
                 .add(Streams::<Liquidations>::builder().subscribe(liquidation_subs))
@@ -201,8 +201,9 @@ impl FutureQuotation {
                                     "Received market event"
                                 );
 
-                                // Handle Trade events
-                                if let DataKind::Trade(_) = event.kind {
+                                // Handle Trade events (DataKind::Trade wraps normalized PublicTrade,
+                                // currently sourced from aggTrade stream in this runner)
+                                if let DataKind::Trade(ref _trade) = event.kind {
                                     let symbol = extract_symbol(&event.instrument);
                                     if let Some(tw) = engine.ctx.trades.get(&symbol) {
                                         if tw.hours_window.tf_total_value > 20000000.0 {
@@ -358,8 +359,9 @@ impl FutureQuotation {
                                     "Received market event"
                                 );
 
-                                // Handle Trade events
-                                if let DataKind::Trade(_) = event.kind {
+                                // Handle Trade events (DataKind::Trade wraps normalized PublicTrade,
+                                // currently sourced from aggTrade stream in this runner)
+                                if let DataKind::Trade(ref _trade) = event.kind {
                                     let symbol = extract_symbol(&event.instrument);
                                     if let Some(tw) = engine.ctx.trades.get(&symbol) {
                                         if tw.hours_window.tf_total_value > 20000000.0 {
@@ -760,6 +762,8 @@ fn apply_event_to_strategy_context(
 
     match &event.kind {
         DataKind::Trade(trade) => {
+            // Note: `trade` here is `barter_data::subscription::trade::PublicTrade`
+            // (normalized exchange trade payload; for this runner currently from aggTrade stream).
             let trade_id = trade.id.parse::<u64>().unwrap_or(0);
             let item = TradeItem {
                 id: trade_id,

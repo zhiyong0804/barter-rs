@@ -9,7 +9,7 @@ use crate::{
         liquidation::Liquidations,
         mark_price::MarkPrices,
         ticker::Tickers24hr,
-        trade::PublicTrades,
+        trade::{PublicTrades, AggregatePublicTrades},
     },
 };
 use serde::Serialize;
@@ -33,6 +33,14 @@ impl BinanceChannel {
     ///
     /// See discord: <https://discord.com/channels/910237311332151317/923160222711812126/975712874582388757>
     pub const TRADES: Self = Self("@trade");
+
+    /// [`Binance`] real-time aggregated trades channel name.
+    ///
+    /// This stream provides aggregated trades with lower bandwidth compared to the individual
+    /// trade stream. Useful for high-volume symbols to reduce data flow.
+    ///
+    /// See docs: <https://developers.binance.com/docs/zh-CN/derivatives/usds-margined-futures/websocket-market-streams/Aggregate-Trade-Streams>
+    pub const AGG_TRADES: Self = Self("@aggTrade");
 
     /// [`Binance`] real-time OrderBook Level1 (top of books) channel name.
     ///
@@ -77,6 +85,14 @@ impl<Server, Instrument> Identifier<BinanceChannel>
 {
     fn id(&self) -> BinanceChannel {
         BinanceChannel::TRADES
+    }
+}
+
+impl<Server, Instrument> Identifier<BinanceChannel>
+    for Subscription<Binance<Server>, Instrument, AggregatePublicTrades>
+{
+    fn id(&self) -> BinanceChannel {
+        BinanceChannel::AGG_TRADES
     }
 }
 

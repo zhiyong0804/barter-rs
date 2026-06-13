@@ -1,6 +1,6 @@
 use self::{
     book::l1::BinanceOrderBookL1, channel::BinanceChannel, market::BinanceMarket,
-    subscription::BinanceSubResponse, trade::BinanceTrade,
+    subscription::BinanceSubResponse, trade::{BinanceTrade, BinanceAggTrade},
 };
 use crate::{
     ExchangeWsStream, NoInitialSnapshots,
@@ -8,7 +8,7 @@ use crate::{
     instrument::InstrumentData,
     subscriber::{WebSocketSubscriber, validator::WebSocketSubValidator},
     subscription::{
-        Map, book::OrderBooksL1, candle_1h::Candles1h, candle_1m::Candles1m, trade::PublicTrades,
+        Map, book::OrderBooksL1, candle_1h::Candles1h, candle_1m::Candles1m, trade::{PublicTrades, AggregatePublicTrades},
     },
     transformer::stateless::StatelessTransformer,
 };
@@ -122,6 +122,16 @@ where
     type SnapFetcher = NoInitialSnapshots;
     type Stream =
         BinanceWsStream<StatelessTransformer<Self, Instrument::Key, PublicTrades, BinanceTrade>>;
+}
+
+impl<Instrument, Server> StreamSelector<Instrument, AggregatePublicTrades> for Binance<Server>
+where
+    Instrument: InstrumentData,
+    Server: ExchangeServer + Debug + Send + Sync,
+{
+    type SnapFetcher = NoInitialSnapshots;
+    type Stream =
+        BinanceWsStream<StatelessTransformer<Self, Instrument::Key, AggregatePublicTrades, BinanceAggTrade>>;
 }
 
 impl<Instrument, Server> StreamSelector<Instrument, OrderBooksL1> for Binance<Server>

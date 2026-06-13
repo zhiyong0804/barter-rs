@@ -25,6 +25,30 @@ impl std::fmt::Display for PublicTrades {
     }
 }
 
+/// Barter [`Subscription`](super::Subscription) [`SubscriptionKind`] that yields [`PublicTrade`]
+/// [`MarketEvent<T>`](crate::event::MarketEvent) events from aggregated trade streams.
+/// 
+/// This is a lower bandwidth alternative to [`PublicTrades`] that receives aggregated trades
+/// instead of every individual trade. Commonly used for high-volume symbols to reduce data flow.
+#[derive(
+    Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default, DeSubKind, SerSubKind,
+)]
+pub struct AggregatePublicTrades;
+
+impl SubscriptionKind for AggregatePublicTrades {
+    type Event = PublicTrade;
+
+    fn as_str(&self) -> &'static str {
+        "aggregate_public_trades"
+    }
+}
+
+impl std::fmt::Display for AggregatePublicTrades {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 /// Normalised Barter [`PublicTrade`] model.
 #[derive(Clone, PartialEq, PartialOrd, Debug, Deserialize, Serialize)]
 pub struct PublicTrade {

@@ -1314,7 +1314,7 @@ impl FrameSignalModule {
 
         let cooldown_ms = self.cfg.config.cooldown_seconds.saturating_mul(1_000);
 
-        if trade.event_time > octx.trigger + cooldown_ms && !octx.has_position() {
+        if trade.event_time > octx.trigger + 1000 && !octx.has_position() {
             let mut short_signal = vol_3s > avg_sec_vol * 3.0 * octx.signal_qty_times
                 && is_accelerating
                 && price_move_3s_pct > octx.signal_price_percent;

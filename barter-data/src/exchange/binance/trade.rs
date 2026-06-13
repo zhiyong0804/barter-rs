@@ -146,6 +146,110 @@ where
     })
 }
 
+/// Binance real-time aggregated trade message.
+///
+/// This stream provides aggregated trades with lower bandwidth compared to the individual
+/// trade stream. Useful for high-volume symbols.
+///
+/// See docs: <https://developers.binance.com/docs/zh-CN/derivatives/usds-margined-futures/websocket-market-streams/Aggregate-Trade-Streams>
+///
+/// ### Raw Payload Example
+/// ```json
+/// {
+///     "e": "aggTrade",
+///     "E": 1649324825173,
+///     "s": "ETHUSDT",
+///     "a": 12345,
+///     "p": "10000.19",
+///     "q": "0.239000",
+///     "f": 100,
+///     "l": 105,
+///     "T": 1749354825200,
+///     "m": false,
+///     "M": true
+/// }
+/// ```
+#[derive(Clone, PartialEq, PartialOrd, Debug, Deserialize, Serialize)]
+pub struct BinanceAggTrade {
+    /// 事件类型 (e)
+    #[serde(alias = "e")]
+    pub event_type: String,
+    /// 事件时间戳 (E)
+    #[serde(alias = "E")]
+    pub event_timestamp: u64,
+    #[serde(alias = "s", deserialize_with = "de_aggtrade_subscription_id")]
+    pub subscription_id: SubscriptionId,
+    #[serde(
+        alias = "T",
+        deserialize_with = "barter_integration::serde::de::de_u64_epoch_ms_as_datetime_utc"
+    )]
+    pub time: DateTime<Utc>,
+    /// 聚合贸易ID (a)
+    #[serde(alias = "a")]
+    pub aggregate_id: u64,
+    /// 第一个交易ID (f)
+    #[serde(alias = "f")]
+    pub first_trade_id: u64,
+    /// 最后一个交易ID (l)
+    #[serde(alias = "l")]
+    pub last_trade_id: u64,
+    #[serde(
+        alias = "p",
+        deserialize_with = "barter_integration::serde::de::de_str"
+    )]
+    pub price: f64,
+    #[serde(
+        alias = "q",
+        deserialize_with = "barter_integration::serde::de::de_str"
+    )]
+    pub amount: f64,
+    #[serde(alias = "m", deserialize_with = "de_side_from_buyer_is_maker")]
+    pub side: Side,
+}
+
+impl Identifier<Option<SubscriptionId>> for BinanceAggTrade {
+    fn id(&self) -> Option<SubscriptionId> {
+        Some(self.subscription_id.clone())
+    }
+}
+
+impl<InstrumentKey> From<(ExchangeId, InstrumentKey, BinanceAggTrade)>
+    for MarketIter<InstrumentKey, PublicTrade>
+{
+    fn from((exchange_id, instrument, trade): (ExchangeId, InstrumentKey, BinanceAggTrade)) -> Self {
+        // 从subscription_id中提取符号
+        let symbol = trade.subscription_id.0.split('|').nth(1).unwrap_or("").to_string();
+        
+        Self(vec![Ok(MarketEvent {
+            time_exchange: trade.time,
+            time_received: Utc::now(),
+            exchange: exchange_id,
+            instrument,
+            kind: PublicTrade {
+                id: trade.aggregate_id.to_string(),
+                price: trade.price,
+                amount: trade.amount,
+                side: trade.side,
+                event_timestamp: trade.event_timestamp,
+                trade_timestamp: trade.time.timestamp_millis() as u64,
+                symbol: symbol,
+                trade_type: None,
+                time: trade.time,
+            },
+        })])
+    }
+}
+
+/// Deserialize a [`BinanceAggTrade`] "s" (eg/ "BTCUSDT") as the associated [`SubscriptionId`]
+/// (eg/ "@aggTrade|BTCUSDT").
+pub fn de_aggtrade_subscription_id<'de, D>(deserializer: D) -> Result<SubscriptionId, D::Error>
+where
+    D: serde::de::Deserializer<'de>,
+{
+    <&str as Deserialize>::deserialize(deserializer)
+        .map(|market| ExchangeSub::from((BinanceChannel::AGG_TRADES, market)).id())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,6 +372,99 @@ mod tests {
 
             for (index, test) in tests.into_iter().enumerate() {
                 let actual = serde_json::from_str::<BinanceTrade>(test.input);
+                match (actual, test.expected) {
+                    (Ok(actual), Ok(expected)) => {
+                        assert_eq!(actual, expected, "TC{} failed", index)
+                    }
+                    (Err(_), Err(_)) => {
+                        // Test passed
+                    }
+                    (actual, expected) => {
+                        // Test failed
+                        panic!(
+                            "TC{index} failed because actual != expected. \nActual: {actual:?}\nExpected: {expected:?}\n"
+                        );
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn test_binance_agg_trade() {
+            struct TestCase {
+                input: &'static str,
+                expected: Result<BinanceAggTrade, SocketError>,
+            }
+
+            let tests = vec![
+                TestCase {
+                    // TC0: Basic aggregated trade
+                    input: r#"
+                    {
+                        "e":"aggTrade",
+                        "E":1649324825173,
+                        "s":"ETHUSDT",
+                        "a":12345,
+                        "p":"10000.19",
+                        "q":"0.239000",
+                        "f":100,
+                        "l":105,
+                        "T":1749354825200,
+                        "m":false,
+                        "M":true
+                    }
+                    "#,
+                    expected: Ok(BinanceAggTrade {
+                        event_type: "aggTrade".to_string(),
+                        event_timestamp: 1649324825173,
+                        subscription_id: SubscriptionId::from("@aggTrade|ETHUSDT"),
+                        time: datetime_utc_from_epoch_duration(Duration::from_millis(
+                            1749354825200,
+                        )),
+                        aggregate_id: 12345,
+                        first_trade_id: 100,
+                        last_trade_id: 105,
+                        price: 10000.19,
+                        amount: 0.239000,
+                        side: Side::Buy,
+                    }),
+                },
+                TestCase {
+                    // TC1: Aggregated trade with buyer_is_maker=true
+                    input: r#"
+                    {
+                        "e":"aggTrade",
+                        "E":1649839266194,
+                        "s":"BTCUSDT",
+                        "a":98765,
+                        "p":"50000.00",
+                        "q":"0.5",
+                        "f":200,
+                        "l":210,
+                        "T":1749354825200,
+                        "m":true,
+                        "M":true
+                    }
+                    "#,
+                    expected: Ok(BinanceAggTrade {
+                        event_type: "aggTrade".to_string(),
+                        event_timestamp: 1649839266194,
+                        subscription_id: SubscriptionId::from("@aggTrade|BTCUSDT"),
+                        time: datetime_utc_from_epoch_duration(Duration::from_millis(
+                            1749354825200,
+                        )),
+                        aggregate_id: 98765,
+                        first_trade_id: 200,
+                        last_trade_id: 210,
+                        price: 50000.00,
+                        amount: 0.5,
+                        side: Side::Sell,
+                    }),
+                },
+            ];
+
+            for (index, test) in tests.into_iter().enumerate() {
+                let actual = serde_json::from_str::<BinanceAggTrade>(test.input);
                 match (actual, test.expected) {
                     (Ok(actual), Ok(expected)) => {
                         assert_eq!(actual, expected, "TC{} failed", index)
