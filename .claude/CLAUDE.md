@@ -4,13 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Skills
 
-Three project skills are available for domain-specific work. Invoke them with `/skill-name` or by mentioning the topic:
+Five project skills are available for domain-specific work. Invoke them with `/skill-name` or by mentioning the topic:
 
 | Skill | When to use |
 |-------|-------------|
 | **coding** | Default guardrail for all implementation work. Enforces four principles: Think Before Coding, Simplicity First, Surgical Changes, Goal-Driven Execution — each with barter-rs specific applications. |
 | **architecture** | Crate boundaries, trait design, dependency direction, concurrency models, refactoring, proc-macro design. Covers the generic composition patterns (`Engine`, `SystemBuilder`, `ExchangeWsStream`) and the indexed data structure approach. |
 | **trading-architecture** | Exchange integration, market data pipelines, strategy/risk design, order lifecycle, Engine Command flows, miraelis signal modules, execution client patterns. |
+| **code-review** | Review PRs, diffs, and changes for correctness, trading safety, concurrency, latency, and architecture consistency. Five-phase review with barter-rs specific checks and severity levels (BLOCKING → PRAISE). |
+| **debugging** | Investigate and resolve bugs, crashes, and incidents. Four-phase workflow: define & scope → gather evidence → isolate root cause → resolution. Includes symptom-to-crate lookup and crate-specific trace paths. |
 
 ## Build, Test, Lint
 
