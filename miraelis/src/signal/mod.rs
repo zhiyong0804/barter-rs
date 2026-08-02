@@ -788,4 +788,146 @@ impl TelegramNotifier {
             .ok_or_else(|| "telegram default chat_id is not configured".to_owned())?;
         self.send_text_to_chat(chat_id, text).await
     }
+
+    /// Fire-and-forget async send for use in synchronous context (signal handlers).
+    /// Spawns a tokio task to send the notification without blocking the caller.
+    pub fn send_signal_async(self: &std::sync::Arc<Self>, signal_type: SignalType, text: String) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            if let Err(error) = this.send_for_signal_type(signal_type, &text).await {
+                tracing::warn!(?error, ?signal_type, "send telegram signal notification failed");
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn telegram_notifier_with_signal_routes_empty_default_chat_id() {
+        let notifier = TelegramNotifier::with_signal_routes(
+            "test_token",
+            Some("".to_owned()),
+            SignalTypeChatIds::default(),
+        );
+        // default_chat_id should be None when empty string is provided
+        assert!(notifier.default_chat_id.is_none());
+    }
+
+    #[test]
+    fn telegram_notifier_signal_chat_ids_routing() {
+        let mut chat_ids = SignalTypeChatIds::default();
+        chat_ids.frame = Some("-123456".to_owned());
+        chat_ids.huge_momentum = Some("-789012".to_owned());
+
+        // Frame → gets the configured chat_id
+        assert_eq!(chat_ids.get(SignalType::Frame), Some("-123456"));
+        // HugeMomentum → gets the configured chat_id
+        assert_eq!(chat_ids.get(SignalType::HugeMomentum), Some("-789012"));
+        // Momentum → not configured, returns None
+        assert_eq!(chat_ids.get(SignalType::Momentum), None);
+    }
+
+    #[tokio::test]
+    async fn telegram_notifier_send_signal_async_does_not_panic() {
+        // Create a notifier with no valid chat IDs — the spawned task will fail
+        // gracefully (logged as warning), but the call itself must not panic.
+        let notifier = Arc::new(TelegramNotifier::with_signal_routes(
+            "test_bot_token",
+            None,
+            SignalTypeChatIds::default(),
+        ));
+        // This should not panic, even though the Telegram API call will fail
+        notifier.send_signal_async(SignalType::Frame, "test signal message".to_owned());
+
+        // Give the spawned task a moment to complete (it will fail, which is fine)
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+
+    #[test]
+    fn signal_chat_ids_empty_string_treated_as_none() {
+        let chat_ids = SignalTypeChatIds {
+            frame: Some("".to_owned()),
+            ..Default::default()
+        };
+        assert_eq!(chat_ids.get(SignalType::Frame), None);
+    }
+
+    #[test]
+    fn trade_frame_signal_format_contains_key_fields() {
+        let signal = TradeFrameSignal {
+            base: TradeSignalBase::new(
+                SignalType::Frame,
+                "test_strategy",
+                1,
+                SignalLevel::Important,
+                "entry trigger",
+                1700000000,
+                "BTCUSDT",
+            ),
+            stage: "entry".to_owned(),
+            side: "SHORT".to_owned(),
+            trade_id: 12345,
+            current_trade_price: 50000.0,
+            trigger_price: 49900.0,
+            signal_qty_times: 2.5,
+            signal_price_percent: 0.045,
+            vol_3s: 1500.0,
+            avg_sec_vol: 300.0,
+            vol_ratio: 5.0,
+            price_move_3s_pct: 0.002,
+            is_accelerating: true,
+            short_signal: true,
+            long_signal: false,
+            stop_price_percent: 0.01,
+            reversal_price_percent: 0.008,
+            shadow_price_percent: 0.33,
+            latest_minute_qty: 50000.0,
+            current_second_qty: 800.0,
+            prev_second_qty: 200.0,
+            high_price_since_open: 50100.0,
+            low_price_since_open: 49800.0,
+            avg_price: 49900.0,
+            should_stop: false,
+            should_reversal: false,
+            should_exhaust: false,
+        };
+        let formatted = signal.format();
+        assert!(formatted.contains("BTCUSDT"));
+        assert!(formatted.contains("entry"));
+        assert!(formatted.contains("SHORT"));
+        assert!(formatted.contains("12345"));
+        assert!(formatted.contains("50000"));
+    }
+
+    #[test]
+    fn huge_momentum_signal_format_contains_key_fields() {
+        let signal = HugeMomentumSignal {
+            base: TradeSignalBase::new(
+                SignalType::HugeMomentum,
+                "huge_momentum",
+                6,
+                SignalLevel::Normal,
+                "IGNITE",
+                1700000060,
+                "ETHUSDT",
+            ),
+            latest_5m_ohlc: [[3000.0, 3010.0, 2995.0, 3008.0]; 3],
+            latest_5m_qty: [10000.0, 12000.0, 15000.0],
+            latest_5m_qty_times: [1.5, 1.8, 2.2],
+            val_base: 5000.0,
+            latest_24h_qty: 500000.0,
+            latest_24h_value: 1500000000.0,
+        };
+        let formatted = signal.format();
+        assert!(formatted.contains("ETHUSDT"));
+        assert!(formatted.contains("IGNITE"));
+        // signal_format_qty formats 500000 as "500.00k"
+        assert!(formatted.contains("500.00k"));
+        // signal_format_qty formats 1500000000 as "1500.00M"
+        assert!(formatted.contains("1500.00M"));
+    }
 }

@@ -8,7 +8,7 @@ use tracing::info;
 
 use crate::{
     quotation::trade_window::{SecondTradeItem, TradeItem, UhfTradeWindow},
-    signal::{SignalLevel, SignalType, TradeFrameSignal, TradeSignalBase},
+    signal::{SignalLevel, SignalType, TelegramNotifier, TradeFrameSignal, TradeSignalBase},
 };
 
 use super::{module_id, StrategyContext, StrategyModule};
@@ -408,6 +408,7 @@ pub struct FrameSignalModule {
     pub cfg: FrameSignalContext,
     order_tx: Option<UnboundedSender<OrderRequest>>,
     order_seq: AtomicU64,
+    telegram_notifier: Option<std::sync::Arc<TelegramNotifier>>,
     /// symbol(lower) → 最近一次检测到下插针的事件时间(ms)
     spike_burst_symbol_times: HashMap<String, u64>,
     /// symbol(lower) → 当前存活的 spike-burst 空头仓位
@@ -422,6 +423,7 @@ impl Default for FrameSignalModule {
             cfg: FrameSignalContext::default(),
             order_tx: None,
             order_seq: AtomicU64::new(1),
+            telegram_notifier: None,
             spike_burst_symbol_times: HashMap::new(),
             spike_burst_positions: HashMap::new(),
             spike_burst_opened_count: 0,
@@ -452,6 +454,7 @@ impl FrameSignalModule {
             cfg: ctx,
             order_tx: None,
             order_seq: AtomicU64::new(1),
+            telegram_notifier: None,
             spike_burst_symbol_times: HashMap::new(),
             spike_burst_positions: HashMap::new(),
             spike_burst_opened_count: 0,
@@ -460,6 +463,14 @@ impl FrameSignalModule {
 
     pub fn with_order_tx(mut self, tx: UnboundedSender<OrderRequest>) -> Self {
         self.order_tx = Some(tx);
+        self
+    }
+
+    pub fn with_telegram_notifier(
+        mut self,
+        notifier: std::sync::Arc<TelegramNotifier>,
+    ) -> Self {
+        self.telegram_notifier = Some(notifier);
         self
     }
 
@@ -1370,6 +1381,10 @@ impl FrameSignalModule {
                     "frame signal triggered"
                 );
 
+                if let Some(notifier) = &self.telegram_notifier {
+                    notifier.send_signal_async(SignalType::Frame, signal.format());
+                }
+
                 Self::trigger_open_orders(
                     octx,
                     trade,
@@ -1474,6 +1489,10 @@ impl FrameSignalModule {
                     message = %signal.format(),
                     "frame signal triggered"
                 );
+
+                if let Some(notifier) = &self.telegram_notifier {
+                    notifier.send_signal_async(SignalType::Frame, signal.format());
+                }
 
                 octx.exit = trade.event_time;
                 Self::reduce_position(octx, trade, strategy_id, order_seq, order_tx, &open_order);
@@ -1615,5 +1634,125 @@ fn normalize_percent(value: f64) -> f64 {
         value / 100.0
     } else {
         value
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::signal::TelegramNotifier;
+    use std::sync::Arc;
+
+    fn dummy_notifier() -> Arc<TelegramNotifier> {
+        Arc::new(TelegramNotifier::with_signal_routes(
+            "test_token",
+            None,
+            crate::signal::SignalTypeChatIds::default(),
+        ))
+    }
+
+    fn make_trade(symbol: &str, id: u64, price: f64, qty: f64) -> TradeItem {
+        TradeItem {
+            symbol: symbol.to_owned(),
+            id,
+            price,
+            qty,
+            second: 1_700_000_000,
+            event_time: 1_700_000_000,
+            transact_time: 1_700_000_000,
+            is_buyer_maker: false,
+        }
+    }
+
+    fn make_octx() -> FrameOrderContext {
+        FrameOrderContext::new("BTCUSDT".to_owned(), &FrameModuleConfig::default())
+    }
+
+    #[test]
+    fn with_telegram_notifier_sets_field() {
+        let notifier = dummy_notifier();
+        let module = FrameSignalModule::with_config(FrameModuleConfig::default())
+            .with_telegram_notifier(notifier);
+        assert!(module.telegram_notifier.is_some());
+    }
+
+    #[test]
+    fn without_telegram_notifier_field_is_none() {
+        let module = FrameSignalModule::with_config(FrameModuleConfig::default());
+        assert!(module.telegram_notifier.is_none());
+    }
+
+    #[test]
+    fn build_entry_signal_has_correct_signal_type() {
+        let trade = make_trade("BTCUSDT", 100, 50000.0, 10.0);
+        let octx = make_octx();
+
+        let signal = FrameSignalModule::build_entry_signal(
+            "test.frame",
+            1,
+            &trade,
+            &octx,
+            PositionSide::Short,
+            49900.0,
+            1500.0,
+            300.0,
+            5.0,
+            0.002,
+            true,
+            true,
+            false,
+            800.0,
+            200.0,
+        );
+        assert_eq!(signal.base.base.signal_type, SignalType::Frame);
+        assert_eq!(signal.base.symbol, "BTCUSDT");
+        assert_eq!(signal.stage, "entry");
+        assert!(signal.format().contains("BTCUSDT"));
+    }
+
+    #[test]
+    fn build_exit_signal_has_correct_signal_type() {
+        let trade = make_trade("ETHUSDT", 200, 3000.0, 5.0);
+        let octx = make_octx();
+        let order = FrameOrderItem {
+            new_client_order_id: "test_cid".to_owned(),
+            order_id: 42,
+            symbol: "ETHUSDT".to_owned(),
+            side: PositionSide::Short,
+            order_type: FrameOrderType::Market,
+            price: 3000.0,
+            stop_price: 0.0,
+            qty: 1.0,
+            avg_price: 3000.0,
+            cum_qty: 0.0,
+            running_status: OrderRunningStatus::New,
+            reduce_only: false,
+            close_position: false,
+            origin_client_order_id: String::new(),
+            origin_order_id: 0,
+            good_till_date: 0,
+            has_stop_close_order: false,
+            has_take_profit_order: false,
+            high_price_since_open: 3001.0,
+            low_price_since_open: 2999.0,
+            open_event_time: 1_700_000_000,
+        };
+
+        let signal = FrameSignalModule::build_exit_signal(
+            "test.frame",
+            1,
+            &trade,
+            &octx,
+            &order,
+            true,
+            false,
+            false,
+            800.0,
+            200.0,
+        );
+        assert_eq!(signal.base.base.signal_type, SignalType::Frame);
+        assert_eq!(signal.stage, "exit");
+        assert!(signal.should_stop);
+        assert!(signal.format().contains("ETHUSDT"));
     }
 }

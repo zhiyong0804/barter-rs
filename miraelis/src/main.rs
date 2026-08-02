@@ -135,22 +135,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (order_response_tx, mut order_response_rx) = tokio::sync::mpsc::unbounded_channel();
 
     let frame_module = if config.execution_cfg.enabled {
-        FrameSignalModule::with_config(config.frame_cfg.clone()).with_order_tx(order_tx.clone())
+        FrameSignalModule::with_config(config.frame_cfg.clone())
+            .with_order_tx(order_tx.clone())
+            .with_telegram_notifier(telegram_notifier.clone())
     } else {
         FrameSignalModule::with_config(config.frame_cfg.clone())
+            .with_telegram_notifier(telegram_notifier.clone())
     };
 
     let huge_module = if config.execution_cfg.enabled {
         HugeMomentumSignalModule::with_config(config.huge_momentum_cfg.clone())
             .with_order_tx(order_tx.clone())
+            .with_telegram_notifier(telegram_notifier.clone())
     } else {
         HugeMomentumSignalModule::with_config(config.huge_momentum_cfg.clone())
+            .with_telegram_notifier(telegram_notifier.clone())
     };
 
     let rocket_module = if config.execution_cfg.enabled {
-        RocketSignalModule::with_config(config.rocket_cfg.clone()).with_order_tx(order_tx.clone())
+        RocketSignalModule::with_config(config.rocket_cfg.clone())
+            .with_order_tx(order_tx.clone())
+            .with_telegram_notifier(telegram_notifier.clone())
     } else {
         RocketSignalModule::with_config(config.rocket_cfg.clone())
+            .with_telegram_notifier(telegram_notifier.clone())
     };
 
     engine.register(Box::new(frame_module));

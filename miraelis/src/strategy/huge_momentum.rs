@@ -9,7 +9,7 @@ use crate::{
     quotation::trade_window::{
         BestBidAskItem, QuotationKline, TradeWindowPriceQty, UhfTradeWindow,
     },
-    signal::{HugeMomentumSignal, SignalLevel, SignalType, TradeSignalBase},
+    signal::{HugeMomentumSignal, SignalLevel, SignalType, TelegramNotifier, TradeSignalBase},
     strategy::frame::{FrameOrderType, OrderRequest, PositionSide},
 };
 
@@ -272,6 +272,7 @@ pub struct HugeMomentumSignalModule {
     pub last_check_second: u64,
     order_tx: Option<UnboundedSender<OrderRequest>>,
     order_seq: u64,
+    telegram_notifier: Option<std::sync::Arc<TelegramNotifier>>,
 }
 
 impl Default for HugeMomentumSignalModule {
@@ -281,6 +282,7 @@ impl Default for HugeMomentumSignalModule {
             last_check_second: 0,
             order_tx: None,
             order_seq: 0,
+            telegram_notifier: None,
         }
     }
 }
@@ -312,12 +314,21 @@ impl HugeMomentumSignalModule {
             last_check_second: 0,
             order_tx: None,
             order_seq: 0,
+            telegram_notifier: None,
         }
     }
 
     /// Attach an order channel.  Call this before starting the module.
     pub fn with_order_tx(mut self, tx: UnboundedSender<OrderRequest>) -> Self {
         self.order_tx = Some(tx);
+        self
+    }
+
+    pub fn with_telegram_notifier(
+        mut self,
+        notifier: std::sync::Arc<TelegramNotifier>,
+    ) -> Self {
+        self.telegram_notifier = Some(notifier);
         self
     }
 
@@ -1114,6 +1125,11 @@ impl StrategyModule for HugeMomentumSignalModule {
                 message = %signal.format(),
                 "huge momentum signal triggered"
             );
+
+            if let Some(notifier) = &self.telegram_notifier {
+                notifier.send_signal_async(SignalType::HugeMomentum, signal.format());
+            }
+
             // Open initial position (30% of budget) at the signal candle close.
             let entry_price = signal.latest_5m_ohlc[2][3]; // b3 close
             self.open_initial_position(&candle.symbol, entry_price);
@@ -1151,7 +1167,7 @@ mod tests {
     use crate::quotation::trade_window::UhfKlineInterval;
     use chrono::{DateTime, Utc};
     use serde::Deserialize;
-    use std::{fs, path::PathBuf};
+    use std::{fs, path::PathBuf, sync::Arc};
 
     fn init_test_tracing() -> tracing::subscriber::DefaultGuard {
         let subscriber = tracing_subscriber::fmt()
@@ -1329,5 +1345,73 @@ mod tests {
             signal_hits > 0,
             "expected at least one huge momentum signal"
         );
+    }
+
+    #[test]
+    fn with_telegram_notifier_sets_field() {
+        let notifier = Arc::new(TelegramNotifier::with_signal_routes(
+            "test_token",
+            None,
+            crate::signal::SignalTypeChatIds::default(),
+        ));
+        let module = HugeMomentumSignalModule::with_config(
+            HugeMomentumModuleConfig::default(),
+        )
+        .with_telegram_notifier(notifier);
+        assert!(module.telegram_notifier.is_some());
+    }
+
+    #[test]
+    fn without_telegram_notifier_field_is_none() {
+        let module =
+            HugeMomentumSignalModule::with_config(HugeMomentumModuleConfig::default());
+        assert!(module.telegram_notifier.is_none());
+    }
+
+    #[test]
+    fn check_returns_none_when_below_threshold() {
+        let mut module = HugeMomentumSignalModule::with_config(
+            HugeMomentumModuleConfig {
+                tf_24h_qty_value_threshold: 100_000_000.0,
+                ..Default::default()
+            },
+        );
+        module.cfg.started = true;
+        module.cfg.started_timestamp = 1_700_000_000;
+
+        let mut tw = UhfTradeWindow::new("TESTUSDT");
+        tw.hours_window.tf_total_qty = 1.0;
+        tw.hours_window.tf_total_value = 1.0;
+
+        let result = module.check("TESTUSDT", &tw);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn huge_momentum_signal_construction() {
+        use crate::signal::{HugeMomentumSignal, SignalLevel, SignalType, TradeSignalBase};
+
+        let signal = HugeMomentumSignal {
+            base: TradeSignalBase::new(
+                SignalType::HugeMomentum,
+                "test.huge",
+                6,
+                SignalLevel::Normal,
+                "TEST_SIGNAL",
+                1_700_000_000,
+                "TESTUSDT",
+            ),
+            latest_5m_ohlc: [[100.0, 110.0, 95.0, 108.0]; 3],
+            latest_5m_qty: [1000.0, 2000.0, 3000.0],
+            latest_5m_qty_times: [2.0, 3.0, 4.0],
+            val_base: 500.0,
+            latest_24h_qty: 100_000.0,
+            latest_24h_value: 10_000_000.0,
+        };
+        assert_eq!(signal.base.base.signal_type, SignalType::HugeMomentum);
+        assert_eq!(signal.base.symbol, "TESTUSDT");
+        let formatted = signal.format();
+        assert!(formatted.contains("TESTUSDT"));
+        assert!(formatted.contains("TEST_SIGNAL"));
     }
 }

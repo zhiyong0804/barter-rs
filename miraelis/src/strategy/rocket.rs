@@ -6,7 +6,7 @@ use tracing::{debug, info};
 
 use crate::{
     quotation::trade_window::TradeItem,
-    signal::{SignalLevel, SignalType, TradeSignalBase},
+    signal::{SignalLevel, SignalType, TelegramNotifier, TradeSignalBase},
     strategy::frame::{FrameOrderType, OrderRequest, PositionSide},
 };
 
@@ -158,6 +158,7 @@ pub struct RocketSignalModule {
     pub order_tx: Option<UnboundedSender<OrderRequest>>,
     pub cfg: RocketSignalContext,
     order_seq: AtomicU64,
+    telegram_notifier: Option<std::sync::Arc<TelegramNotifier>>,
 }
 
 impl Default for RocketSignalModule {
@@ -166,6 +167,7 @@ impl Default for RocketSignalModule {
             order_tx: None,
             cfg: RocketSignalContext::default(),
             order_seq: AtomicU64::new(1),
+            telegram_notifier: None,
         }
     }
 }
@@ -208,6 +210,14 @@ impl RocketSignalModule {
     /// Attach an order channel.  Call this before starting the module.
     pub fn with_order_tx(mut self, tx: UnboundedSender<OrderRequest>) -> Self {
         self.order_tx = Some(tx);
+        self
+    }
+
+    pub fn with_telegram_notifier(
+        mut self,
+        notifier: std::sync::Arc<TelegramNotifier>,
+    ) -> Self {
+        self.telegram_notifier = Some(notifier);
         self
     }
 
@@ -683,6 +693,19 @@ impl StrategyModule for RocketSignalModule {
                     tf_total_value = trade_window.hours_window.tf_total_value,
                     "rocket signal triggered"
                 );
+
+                if let Some(notifier) = &self.telegram_notifier {
+                    let msg = format!(
+                        "Rocket detected: first_qty_ratio={:.1}x, second_qty_ratio={:.1}x, \
+                         first_close={:.4}, second_close={:.4}, 10min_high={:.4}",
+                        signal_info.first_ratio,
+                        signal_info.second_ratio,
+                        signal_info.first_close,
+                        signal_info.second_close,
+                        signal_info.ten_min_high
+                    );
+                    notifier.send_signal_async(SignalType::Rocket, msg);
+                }
 
                 let context = format!(
                     "Rocket detected: first_qty_ratio={:.1}x, second_qty_ratio={:.1}x, \
