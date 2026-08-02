@@ -9,12 +9,16 @@ When analyzing any token, you MUST systematically work through all four dimensio
 
 ## Tools in this Skill
 
-| Tool | Location | Purpose |
-|------|----------|---------|
-| `fetch_klines.py` | Same directory as this file | Fetch real OHLCV from Binance or Hyperliquid |
-| `compute_indicators.py` | Same directory as this file | Compute 7 indicators from kline CSV |
+| Tool | Location | Purpose | Chains |
+|------|----------|---------|--------|
+| `fetch_klines.py` | Same directory as this file | Fetch real OHLCV from Binance or Hyperliquid | All (Binance spot + Hyperliquid perps) |
+| `compute_indicators.py` | Same directory as this file | Compute 7 indicators from kline CSV | All |
+| `scan_holders.py` | Same directory as this file | Fetch top 100 holders from CoinLore (free, no key) | **Ethereum, BSC** (established tokens) |
+| `scan_holders_solana.py` | Same directory as this file | Fetch **full Top 100 addresses with balances** from Solana on-chain data (`getProgramAccounts`) + GeckoTerminal safety scores | **Solana** SPL tokens |
 
 Dependencies: `python3` with `requests` (`python3 -m pip install --break-system-packages requests`).
+
+**All tools are FREE and require NO API keys.** Solana public RPC works reliably for `getProgramAccounts`.
 
 ---
 
@@ -321,11 +325,34 @@ Compare the daily and 4h indicator readings:
 Answer: *Who actually holds this token? Are insiders distributing to retail, or accumulating?*
 
 ## Data Sources
-Use **WebSearch** and **WebFetch** on:
-- Etherscan / BscScan / Solscan (holder tabs)
-- CoinMarketCap / CoinGecko (on-chain sections)
-- Nansen / Arkham / Bubblemaps (if publicly accessible)
-- Crypto news outlets that may have published holder analysis
+Use **WebSearch**, **WebFetch**, and **the `scan_holders.py` script** (in this skill's directory).
+
+### Primary: scan_holders.py (CoinLore Rich List)
+
+**This is the preferred method for established tokens.** CoinLore provides free, structured holder data with addresses, balances, percentages, and aggregate concentration stats. No API key needed. Covers 1000+ tokens across Ethereum, BSC, and other chains.
+
+```bash
+# Get top 10 holders as a markdown table
+python3 .claude/skills/crypto-data/scan_holders.py --token dodo --format md --top 10
+
+# Get top 10 as JSON (for programmatic use)
+python3 .claude/skills/crypto-data/scan_holders.py --token dia --format json --top 10
+
+# Find the correct slug for a token
+python3 .claude/skills/crypto-data/scan_holders.py --search "dodo"
+
+# Quick text summary
+python3 .claude/skills/crypto-data/scan_holders.py --token dogecoin --top 10
+```
+
+**Coverage**: Established tokens on CoinGecko/CMC. For our analyzed tokens: DODO ✅, DIA ✅, DEXE ✅, DOGE ✅, VANRY ✅, but SUI/HYPE/PENGU/ZEROBASE/AKE/IDOL ❌.
+
+### Fallback: WebSearch + WebFetch
+
+When `scan_holders.py` returns 404 (token not on CoinLore), use WebSearch:
+- `"{TOKEN} top holders etherscan bscscan distribution 2026"`
+- `"{TOKEN} holder concentration whales"`
+- WebFetch on Etherscan/BscScan holder pages and analysis articles
 
 ## Step 4.1: Basic Metrics
 
@@ -429,11 +456,23 @@ Search strategy (in priority order):
 | 链 | 持币地址 | 合约地址 |
 |------|----------|----------|
 
-### 4.2 Top 10 地址深度分析
-[Table as specified above]
+### 4.2 Top 100 地址分析
+#### 集中度总览
+| 分组 | 持仓量 | 占总供应% | 风险等级 |
+|------|--------|-----------|----------|
+| Top 10 | — | — | — |
+| Top 50 | — | — | — |
+| Top 100 | — | — | — |
 
-### 集中度评估
-[Bullet points from aggregated analysis]
+#### Top 10 地址详情
+| # | 地址 | 持仓量 | 占比 | 类型 | 风险 |
+|---|------|--------|------|------|------|
+
+#### Top 11-100 摘要
+[Compact summary: exchange wallets, team wallets, notable unknowns]
+
+#### 集中度评估
+[Bullet points including real concentration excluding known entities]
 
 ### 4.3 流动性
 | 池子 | TVL | 24h 量 | TVL/MC 比 |

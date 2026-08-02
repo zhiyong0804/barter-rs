@@ -71,48 +71,186 @@ Only fall back to WebSearch TA articles if the token is NOT listed on Binance or
 - Liquidity depth on major DEX pools (TVL, 24h volume).
 - Any security flags: honeypot checks, rug pull risk, audit reports.
 
-#### 4.2 Top 10 Address Deep Analysis (CRITICAL — must be thorough)
+#### 4.2 Top 100 Address Analysis (CRITICAL — must be thorough)
 
-For EACH of the top 10 holder addresses, you MUST investigate and report:
+**First, fetch the data** using `scan_holders.py`:
+```bash
+python3 .claude/skills/crypto-data/scan_holders.py --token {slug} --format json --top 100
+```
+If the slug is unknown, search first with `--search "{name}"`.
+
+This returns: full list of top 100 addresses with balances and percentages, plus aggregate bands (Top 10, 11-100, 101-1000, Else).
+
+##### 4.2.1 Aggregate Concentration Summary (MANDATORY)
+
+From the CoinLore aggregates, report:
 
 ```
-| 排名 | 地址（缩写） | 持仓量 | 占比 | 6月前持仓 | 6月变动 | 变动% | 地址类型 | 风险信号 |
-|------|-------------|--------|------|-----------|----------|-------|----------|----------|
-| #1   | 0x1234...abcd | 1.2亿 | 12%  | 1.5亿     | -3000万   | -20%  | 交易所钱包 | ⚠️ 持续减持 |
-| #2   | 0x5678...efgh | 0.8亿 | 8%   | 0.5亿     | +3000万   | +60%  | 项目方多签 | ✅ 增持 |
-| ...  | ...          | ...   | ...  | ...       | ...       | ...   | ...      | ... |
+| 分组 | 持仓量 | 占总供应% | 风险等级 |
+|------|--------|-----------|----------|
+| Top 10 | X,XXX,XXX | XX.X% | 🔴/🟡/🟢 |
+| Top 50 | X,XXX,XXX | XX.X% | 🔴/🟡/🟢 |
+| Top 100 | X,XXX,XXX | XX.X% | 🔴/🟡/🟢 |
+| 101-1000 | X,XXX,XXX | XX.X% | — |
+| 其余 | X,XXX,XXX | XX.X% | — |
+
+风险等级:
+  Top 100 > 95% = 🔴 极度集中（AKE/IDOL级别，散户几乎不持有）
+  Top 100 > 80% = 🟡 较集中（DODO/DIA级别，中小市值正常水平）
+  Top 100 < 50% = 🟢 分散（DOGE/PENGU级别，广泛分布）
+```
+
+##### 4.2.2 Top 10 Individual Addresses (FULL DETAIL)
+
+For EACH of the top 10, show the full detail table:
+
+```
+| # | 地址 | 持仓量 | 占比 | 类型 | 风险 |
+|---|------|--------|------|------|------|
+| 1 | 0x1234...abcd | 1.2亿 | 35.4% | 交易所 | — |
+| 2 | 0x5678...efgh | 0.8亿 | 27.4% | 未知 | 🟡 |
+| ... up to #10 |
 ```
 
 **Required fields for each address:**
-1. **地址缩写** — first 6 + last 4 characters (e.g., `0x1234...abcd`). Link to the block explorer.
-2. **持仓量** — current balance in token amount and USD value.
-3. **占比** — percentage of circulating supply.
-4. **6月前持仓** — balance approximately 6 months ago (search for historical snapshots or use "balance 6 months ago" queries). If exact data is unavailable, estimate from available historical data and mark as "约".
-5. **6月变动** — absolute change over 6 months (+ for accumulation, - for distribution).
-6. **变动%** — percentage change.
-7. **地址类型判断** — classify each address using context clues:
-   - `交易所` — exchange hot/cold wallet (identifiable via labels on Etherscan/BscScan/Solscan)
-   - `项目方/团队` — team vesting or treasury wallet
-   - `做市商` — market maker (e.g., GSR, Wintermute, Jump — check if address is known)
-   - `早期投资者` — investor vesting wallet
-   - `巨鲸/大户` — unlabeled large holder
-   - `流动性池` — LP contract
-   - `跨链桥` — bridge contract
-   - `销毁地址` — burn/null address (0x0000... or 0xdead...)
-   - `未知` — cannot classify
-8. **风险信号** — flag concerning patterns:
-   - `🔴 持续减持` — consecutive monthly distribution
-   - `🔴 大额转出` — recent large outflows to exchanges
-   - `🟡 即将解锁` — vesting wallet nearing unlock date
-   - `🟡 新地址` — wallet appeared recently with large holdings
-   - `✅ 持续增持` — consecutive monthly accumulation
-   - `✅ 长期锁仓` — tokens in staking/vesting with no movement
+1. **地址** — first 6 + last 4 characters. Link to block explorer.
+2. **持仓量** — token amount + USD value.
+3. **占比** — % of total supply (from CoinLore).
+4. **地址类型** — classify using block explorer labels and context:
+   - `交易所` / `项目方/团队` / `做市商` / `早期投资者` / `巨鲸/大户` / `流动性池` / `跨链桥` / `销毁地址` / `未知`
+5. **风险信号** — flag patterns: `🔴 持续减持` / `🔴 大额转出` / `🟡 即将解锁` / `🟡 新地址` / `✅ 持续增持` / `✅ 长期锁仓`
 
-**Aggregated analysis after the table:**
-- **集中度评估**: Calculate Top 5 combined %, Top 10 combined %. Compare to similar-marketcap tokens. Flag if >50% or <10%.
-- **趋势总结**: Among Top 10, how many are accumulating vs distributing? Net flow direction over 6 months.
-- **扣除已知实体后的真实集中度**: Exclude burn addresses, exchange wallets, and bridge contracts — what % do identifiable team/investor/unknown whales hold?
-- **最大风险地址**: Identify the single most dangerous address (e.g., a team wallet with large holdings nearing unlock, or an unknown whale that's been steadily distributing).
+##### 4.2.3 Top 11-100 Addresses (COMPACT SUMMARY)
+
+For addresses #11-100, show a compact summary rather than individual rows:
+
+```
+Top 11-100 关键发现:
+  - 交易所钱包: X 个，合计 X.X%
+  - 已知项目方/团队钱包: X 个，合计 X.X%
+  - 销毁地址: X 个，合计 X.X%
+  - 未知巨鲸: X 个（需要关注的有: #42 0xabcd... 持有 X%，#73 0x1234... 持有 X%）
+  - 净趋势: 这 90 个地址合计占比从 CoinLore 聚合为 X.X%
+```
+
+##### 4.2.4 6-Month Position Change Analysis (CRITICAL — cross-reference with history)
+
+This is the highest-signal part of on-chain analysis. You MUST:
+
+1. **Collect known historical addresses** from WebSearch:
+   - Search `"{TOKEN} whale wallets dump accumulate February March 2026"`
+   - Search `"{TOKEN} BubbleMaps insider concentration"`
+   - Extract any specific addresses flagged by how2onchain, BubbleMaps, Nansen, Lookonchain, or similar
+
+2. **Cross-reference with current Top 100**:
+   ```bash
+   # For each known historical address, check if it's still in current Top 100
+   python3 .claude/skills/crypto-data/scan_holders.py --token {slug} --format json --top 100
+   # or for Solana:
+   python3 .claude/skills/crypto-data/scan_holders_solana.py --address {mint} --top 100 --format json
+   ```
+   Compare the output against each known address. For each one:
+   - 🔴 **仍在 Top 100** → report current rank, balance, percentage, and change direction
+   - 🟢 **已退出 Top 100** → means fully exited or reduced below Top 100 threshold
+
+3. **Build the change summary table**:
+
+```
+┌─────────────────────┬──────────────┬──────────────┬──────────┐
+│ 指标                │ 6月前 (估)   │ 当前         │ 变化     │
+├─────────────────────┼──────────────┼──────────────┼──────────┤
+│ Top 10 合计         │ XX% (历史)   │ XX% (当前)   │ ±Xpp     │
+│ Top 100 合计        │ XX% (历史)   │ XX% (当前)   │ ±Xpp     │
+│ 已知巨鲸在 Top 100  │ X/Y 个       │ X/Y 个       │ 流入/流出│
+│ #1 地址             │ 旧/新钱包    │ XX%          │ 换庄/不变│
+│ 持币地址总数         │ XX,XXX       │ XX,XXX        │ ±X%     │
+└─────────────────────┴──────────────┴──────────────┴──────────┘
+```
+
+4. **Key conclusions to draw**:
+   - Did the old whales exit? (If all known dump addresses are gone → old players cashed out)
+   - Are the current Top 10 new wallets? (If yes → new whales bought the dip, structure risk persists)
+   - Did concentration improve or worsen? (Compare Top 100 % from historical reports vs current)
+   - Is the #1 address new or old? (New #1 after a crash = potential new manipulator)
+
+5. **If zero historical address data is available**, build at minimum this table:
+   - Current Top 100 aggregates from scan_holders
+   - Any available historical context from WebSearch (BubbleMaps articles, Nansen snapshots)
+   - Mark clearly which fields are estimated ("约") vs verified
+
+##### 4.2.5 Maximum Risk Address & Structural Risk Assessment
+
+- **最大风险地址**: Identify the single most dangerous address among the top 100 and explain why (size, type, history, or lack thereof).
+- **集中度评估**: Top 10 vs Top 50 vs Top 100 combined %. Cross-reference with comparison table in `doc/research/`.
+- **扣除已知实体后的真实集中度**: Exclude burn addresses, exchange wallets, bridge contracts.
+
+#### 4.3 Liquidity Analysis (interpret the numbers)
+
+Liquidity data answers: *Can you actually trade this token without moving the price? Where does trading happen?*
+
+##### Required metrics
+
+| 渠道 | 数据 | 含义 |
+|------|------|------|
+| **CEX 现货** | 24h 成交量、主要交易所 | 中心化交易所的深度。> $1 亿 = 流动性充裕；< $500 万 = 极度稀缺 |
+| **DEX** | TVL、24h 量、主要协议 | 链上流动性。高 TVL = 链上生态活跃；低 TVL = 链上无人使用 |
+| **ETF** | AUM、是否有申请 | 机构渠道。ETF 存在 = 传统资金可以合规配置 |
+
+##### HOW TO INTERPRET — explain the numbers in context
+
+**DO NOT just list the numbers.** After listing, add a paragraph that explains the **liquidity structure**:
+
+```
+"ADA 的流动性结构:
+  CEX:  ✅/🟡/🔴 解释
+  DEX:  ✅/🟡/🔴 解释
+  ETF:  ✅/🟡/🔴 解释
+
+→ 结论: [一句话总结这个代币的流动性特征]"
+```
+
+**Interpretation guide:**
+
+1. **CEX-heavy, DEX-empty** → 代币是"交易所商品"，人们在 CEX 上交易但不在链上使用。典型于 ADA、DOGE、老牌 L1。
+
+2. **DEX-dominated** → 链上生态活跃，代币在 DeFi 中被实际使用。典型于 HYPE（自有 DEX）、Solana meme。
+
+3. **Both thin** → 微盘代币的风险信号。进出困难，滑点极大。典型于 VANRY、AKE、IDOL。
+
+4. **ETF exists** → 机构渠道打开。但 AUM 大小决定实际影响：$5,000 万 vs $50 亿是完全不同的概念。
+
+5. **Cross-reference with market cap**: 
+   - DEX TVL / Market Cap < 1% → 链上基本没有经济活动（ADA: $70M / $6.6B = 0.01）
+   - DEX TVL / Market Cap > 50% → 链上生态繁荣（HYPE 自有生态）
+
+##### Example — ADA's liquidity profile
+
+```
+| 渠道 | 详情 |
+|------|------|
+| CEX | Binance、Coinbase、Kraken、Upbit 等，日量 ~$4 亿 |
+| DEX | Minswap、SundaeSwap 等，TVL ~$7,000 万 |
+| ETF | Grayscale GADA 申请中（8/9 前决定），现有 ETF $4,810 万 AUM |
+
+ADA 的流动性结构:
+  CEX:  ✅ 充裕（日量 $4 亿，深度好，容易进出）
+  DEX:  🔴 极度稀缺（$7,000 万 TVL，仅为 SOL 的 1.75%）
+  ETF:  🟡 起步阶段（$4,810 万 AUM，增长中）
+  
+→ ADA 是一个"在 CEX 上交易、而非在链上使用"的资产。
+  对于市值 $66 亿的 L1，$7,000 万链上 TVL 意味着链上几乎没有经济活动。
+  这与 16,000 日活地址互相印证——人们在交易所买卖 ADA，
+  但几乎不通过 Cardano 链进行 DeFi 操作。
+```
+
+##### Cross-reference table for context
+
+| 代币类型 | 典型 CEX 量 | 典型 DEX TVL | 含义 |
+|----------|-----------|-------------|------|
+| 大市值 L1 (ADA/SUI) | $1-5 亿 | $0.5-5 亿 | CEX 为主，链上 TVL 应 >$1 亿才健康 |
+| DEX 龙头 (HYPE) | — | 自有生态 | DEX 即产品，TVL = 产品使用量 |
+| Meme (DOGE/PIPPIN) | $0.5-5 亿 | $0.1-1 亿 | CEX 为主，DEX 流动性通常薄 |
+| 微盘 (VANRY/AKE/IDOL) | < $500 万 | < $50 万 | 双向稀缺，滑点极大⚠️ |
 
 ### Dimension 5: Catalysts & Risks
 - Near-term catalysts (0-6 months): exchange listings, product launches, token unlocks, partnerships, regulatory decisions.
@@ -142,8 +280,14 @@ Save the report to `doc/research/{TOKEN_SYMBOL}_分析报告.md`. Use the follow
 ## 三、盘面/技术分析
 ## 四、链上数据
   ### 4.1 基础指标
-  ### 4.2 Top 10 地址深度分析
+  ### 4.2 Top 100 地址分析
+    #### 4.2.1 集中度总览
+    #### 4.2.2 Top 10 地址详情
+    #### 4.2.3 Top 11–100 地址
+    #### 4.2.4 6 个月持仓变动（历史交叉比对）
+    #### 4.2.5 最大风险地址
   ### 4.3 流动性
+    [CEX/DEX/ETF 三栏表 + 流动性结构分析 + 与同类代币对比]
 ## 五、综合评估（✅优势 / 🔴风险 / 🎯催化剂）
 ## 六、多空情景分析
 ## 七、总结与建议
@@ -211,16 +355,27 @@ python3 .claude/skills/crypto-data/compute_indicators.py /tmp/{token}_4h.csv --t
 Then **Read the indicator CSV files** to extract SMA alignment, RSI, MACD, Bollinger Bands, ATR, volume signals.
 
 **On-chain deep dive (in parallel):**
-1. Get the contract address from the most active chain.
-2. Search for holder snapshots:
-   - `"{TOKEN} top 10 holders etherscan distribution 2026"`
-   - `"{TOKEN} top 100 holders concentration"`
-3. Search for historical data (for 6-month change):
-   - `"{TOKEN} holder distribution January 2026"`
-   - `"{TOKEN} whale holdings change Q1 2026"`
-4. Identify known addresses via block explorer labels.
-5. If WebSearch can't find historical snapshots, use WebFetch on CoinMarketCap, Etherscan, Nansen/Arkham public dashboards.
-6. If 6-month data is genuinely unavailable, mark as "数据不可得" and use the longest available period.
+
+**Step 1: Determine the chain and call the appropriate holder script.**
+
+- **Ethereum / BSC tokens**: Use CoinLore (free, no key):
+  ```bash
+  python3 .claude/skills/crypto-data/scan_holders.py --search "{token_name}"
+  python3 .claude/skills/crypto-data/scan_holders.py --token {slug} --format json --top 100
+  ```
+- **Solana SPL tokens**: Use Solana RPC (free key at dev.helius.xyz):
+  ```bash
+  python3 .claude/skills/crypto-data/scan_holders_solana.py --address {mint} --top 100 --format json
+  ```
+  If `$HELIUS_KEY` is set, the script uses it automatically. Without a key, public RPCs are tried with backoff but may fail.
+- **Other chains (Polygon, Avalanche, etc.)**: Also use CoinLore first; if not found, fall back to WebSearch.
+
+**Step 2: If the above scripts fail or the token is not covered**, fall back to WebSearch:
+  - `"{TOKEN} top 100 holders etherscan bscscan solscan distribution 2026"`
+  - `"{TOKEN} holder concentration whales"`
+  - WebFetch on Etherscan/BscScan/Solscan holder pages and analysis articles
+
+**Step 3: Search for historical data** (for 6-month change) and identify address types via block explorer labels.
 
 ### Phase 3: Deep Dive (Conditional)
 If any dimension has thin or contradictory results, use WebFetch to read specific pages (project docs, CoinMarketCap, Etherscan, news articles).
