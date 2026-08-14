@@ -8,7 +8,8 @@ use crate::{
     instrument::InstrumentData,
     subscriber::{WebSocketSubscriber, validator::WebSocketSubValidator},
     subscription::{
-        Map, book::OrderBooksL1, candle_1h::Candles1h, candle_1m::Candles1m, trade::{PublicTrades, AggregatePublicTrades},
+        Map, book::OrderBooksL1, candle_1h::Candles1h, candle_1m::Candles1m,
+        candle_4h::Candles4h, trade::{PublicTrades, AggregatePublicTrades},
     },
     transformer::stateless::StatelessTransformer,
 };
@@ -164,6 +165,17 @@ where
     type SnapFetcher = NoInitialSnapshots;
     type Stream = BinanceWsStream<
         StatelessTransformer<Self, Instrument::Key, Candles1h, candle::BinanceCandle1h>,
+    >;
+}
+
+impl<Instrument, Server> StreamSelector<Instrument, Candles4h> for Binance<Server>
+where
+    Instrument: InstrumentData,
+    Server: ExchangeServer + Debug + Send + Sync,
+{
+    type SnapFetcher = NoInitialSnapshots;
+    type Stream = BinanceWsStream<
+        StatelessTransformer<Self, Instrument::Key, Candles4h, candle::BinanceCandle4h>,
     >;
 }
 

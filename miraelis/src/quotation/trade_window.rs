@@ -36,6 +36,7 @@ fn dmin(a: f64, b: f64) -> f64 {
 pub enum UhfKlineInterval {
     M1 = 1,
     H1 = 60,
+    H4 = 240,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -88,6 +89,15 @@ pub struct BestBidAskItem {
     pub best_ask_qty: f64,
     pub event_time: u64,
     pub transact_time: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct MarkPriceItem {
+    pub symbol: String,
+    pub mark_price: f64,
+    pub index_price: f64,
+    pub funding_rate: f64,
+    pub event_time: u64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -300,9 +310,14 @@ pub struct UhfTradeWindow {
     pub last_now_sec: u64,
     pub last_trade_id: u64,
     pub best_bid_ask: BestBidAskItem,
+    pub latest_mark_price: MarkPriceItem,
+    /// Latest open interest from @openInterest WebSocket.
+    pub latest_oi: f64,
     pub seconds_window: TradeSecondsWindow,
     pub minutes_window: TradeMinutesWindow,
     pub hours_window: TradeHourWindow,
+    /// 4h klines for pump scanner volume ratio (max 50 bars = 8+ days).
+    pub four_hour_klines: VecDeque<QuotationKline>,
 }
 
 impl UhfTradeWindow {
@@ -313,9 +328,12 @@ impl UhfTradeWindow {
             last_now_sec: 0,
             last_trade_id: 0,
             best_bid_ask: BestBidAskItem::default(),
+            latest_mark_price: MarkPriceItem::default(),
+            latest_oi: 0.0,
             seconds_window: TradeSecondsWindow::default(),
             minutes_window: TradeMinutesWindow::default(),
             hours_window: TradeHourWindow::default(),
+            four_hour_klines: VecDeque::with_capacity(50),
         }
     }
 
@@ -616,6 +634,7 @@ impl UhfTradeWindow {
         match item.interval {
             UhfKlineInterval::M1 => self.update_kline_1m(item),
             UhfKlineInterval::H1 => self.update_kline_1h(item),
+            UhfKlineInterval::H4 => self.update_4h_kline(item),
         }
     }
 
@@ -845,6 +864,18 @@ impl UhfTradeWindow {
 
     pub fn update_best_bid_ask(&mut self, item: BestBidAskItem) {
         self.best_bid_ask = item;
+    }
+
+    pub fn update_mark_price(&mut self, item: MarkPriceItem) {
+        self.latest_mark_price = item;
+    }
+
+    /// Push a finalized 4h kline. Keeps at most 50 bars (8+ days for 7-day lookback).
+    pub fn update_4h_kline(&mut self, kline: QuotationKline) {
+        if self.four_hour_klines.len() >= 50 {
+            self.four_hour_klines.pop_front();
+        }
+        self.four_hour_klines.push_back(kline);
     }
 
     pub fn get_second_avg_qty(&self) -> f64 {

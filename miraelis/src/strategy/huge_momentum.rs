@@ -1270,6 +1270,7 @@ mod tests {
         let interval_ms = match interval {
             UhfKlineInterval::M1 => 60_000,
             UhfKlineInterval::H1 => 3_600_000,
+            UhfKlineInterval::H4 => 14_400_000,
         };
 
         QuotationKline {

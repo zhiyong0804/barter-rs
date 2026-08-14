@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 
 use crate::quotation::trade_window::{
-    BestBidAskItem, QuotationKline, QuotationTicker, TradeItem, UhfTradeWindow,
+    BestBidAskItem, MarkPriceItem, QuotationKline, QuotationTicker, TradeItem, UhfTradeWindow,
 };
 use crate::strategy::frame::OrderResponse;
 
 pub mod frame;
 pub mod huge_momentum;
+pub mod pump_scanner;
 pub mod rocket;
 
 // ---------------------------------------------------------------------------
@@ -21,6 +22,7 @@ pub enum MarketEvent {
     Candle1h(QuotationKline),
     BestBidAsk(BestBidAskItem),
     Ticker(QuotationTicker),
+    MarkPrice(MarkPriceItem),
     // Order / Depth can be added here as their types are defined
 }
 
@@ -89,8 +91,10 @@ pub trait StrategyModule: Send + Sync {
     fn handle_trade(&mut self, _ctx: &mut StrategyContext, _trade: &TradeItem) {}
     fn handle_spot_trade(&mut self, _ctx: &mut StrategyContext, _trade: &TradeItem) {}
     fn handle_candle_1m(&mut self, _ctx: &mut StrategyContext, _candle: &QuotationKline) {}
+    fn handle_candle_1h(&mut self, _ctx: &mut StrategyContext, _candle: &QuotationKline) {}
     fn handle_best_bid_ask(&mut self, _ctx: &mut StrategyContext, _bba: &BestBidAskItem) {}
     fn handle_ticker(&mut self, _ctx: &mut StrategyContext, _ticker: &QuotationTicker) {}
+    fn handle_mark_price(&mut self, _ctx: &mut StrategyContext, _mark_price: &MarkPriceItem) {}
     fn handle_order_response(&mut self, _ctx: &mut StrategyContext, _response: &OrderResponse) {}
 }
 
@@ -192,6 +196,15 @@ impl StrategyEngine {
                     .or_insert_with(|| UhfTradeWindow::new(symbol.clone()));
                 window.update_ticker(tk.clone());
             }
+            MarketEvent::MarkPrice(mp) => {
+                let symbol = mp.symbol.clone();
+                let window = self
+                    .ctx
+                    .trades
+                    .entry(symbol.clone())
+                    .or_insert_with(|| UhfTradeWindow::new(symbol.clone()));
+                window.update_mark_price(mp.clone());
+            }
         }
 
         // --- Step 2: dispatch to all modules ---
@@ -203,7 +216,8 @@ impl StrategyEngine {
                 MarketEvent::Candle1m(candle) => m.handle_candle_1m(&mut self.ctx, candle),
                 MarketEvent::BestBidAsk(bba) => m.handle_best_bid_ask(&mut self.ctx, bba),
                 MarketEvent::Ticker(tk) => m.handle_ticker(&mut self.ctx, tk),
-                MarketEvent::Candle1h(_candle) => {}
+                MarketEvent::MarkPrice(mp) => m.handle_mark_price(&mut self.ctx, mp),
+                MarketEvent::Candle1h(candle) => m.handle_candle_1h(&mut self.ctx, candle),
             }
         }
         self.modules = modules;
@@ -230,4 +244,5 @@ pub mod module_id {
     pub const PULLBACK_SIGNAL: u64 = 5;
     pub const HUGE_MOMENTUM_SIGNAL: u64 = 6;
     pub const FRAME_NEEDLE: u64 = 7;
+    pub const PUMP_SCANNER: u64 = 8;
 }

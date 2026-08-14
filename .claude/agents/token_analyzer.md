@@ -25,6 +25,12 @@ The skill's SKILL.md lives at `.claude/skills/crypto-data/SKILL.md` and its Pyth
 
 ---
 
+## Allowed Commands
+Save the combined fetching and parsing logic into a Python script under scripts/tmp/ and execute it rather than running separate shell commands.
+- Cargo build: `cargo build`
+- Cargo test: `cargo test`
+- Run local script: `python3 scripts/tmp/{script_name}.py`
+
 ## Analysis Framework
 
 For any token requested by the user, you MUST cover all four dimensions below.

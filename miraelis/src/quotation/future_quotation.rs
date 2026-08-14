@@ -9,7 +9,8 @@ use barter_data::{
         Streams,
     },
     subscription::{
-        book::OrderBooksL1, candle_1h::Candles1h, candle_1m::Candles1m, liquidation::Liquidations,
+        book::OrderBooksL1, candle_1h::Candles1h, candle_1m::Candles1m, candle_4h::Candles4h,
+        liquidation::Liquidations, mark_price::MarkPrices, open_interest::OpenInterests,
         ticker::Tickers24hr, trade::AggregatePublicTrades,
     },
 };
@@ -28,7 +29,8 @@ use crate::strategy::{MarketEvent, StrategyEngine};
 
 use super::rate_limiter::RateLimiter;
 use super::trade_window::{
-    BestBidAskItem, QuotationKline, QuotationTicker, TradeItem, UhfKlineInterval, UhfTradeWindow,
+    BestBidAskItem, MarkPriceItem, QuotationKline, QuotationTicker, TradeItem, UhfKlineInterval,
+    UhfTradeWindow,
 };
 
 use super::writer::AsyncRollbackWriter;
@@ -112,6 +114,20 @@ impl FutureQuotation {
                 })
                 .collect::<Vec<_>>();
 
+            let candle_4h_subs = group
+                .iter()
+                .map(|item| {
+                    (
+                        format!("{}|kline_4h", item.symbol),
+                        BinanceFuturesUsdMarket::default(),
+                        item.base.clone(),
+                        item.quote.clone(),
+                        MarketDataInstrumentKind::Perpetual,
+                        Candles4h,
+                    )
+                })
+                .collect::<Vec<_>>();
+
             let liquidation_subs = group
                 .iter()
                 .map(|item| {
@@ -154,13 +170,44 @@ impl FutureQuotation {
                 })
                 .collect::<Vec<_>>();
 
+            let mark_price_subs = group
+                .iter()
+                .map(|item| {
+                    (
+                        format!("{}|mark_price", item.symbol),
+                        BinanceFuturesUsdMarket::default(),
+                        item.base.clone(),
+                        item.quote.clone(),
+                        MarketDataInstrumentKind::Perpetual,
+                        MarkPrices,
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            let oi_subs = group
+                .iter()
+                .map(|item| {
+                    (
+                        format!("{}|open_interest", item.symbol),
+                        BinanceFuturesUsdMarket::default(),
+                        item.base.clone(),
+                        item.quote.clone(),
+                        MarketDataInstrumentKind::Perpetual,
+                        OpenInterests,
+                    )
+                })
+                .collect::<Vec<_>>();
+
             builder = builder
                 .add(Streams::<AggregatePublicTrades>::builder().subscribe(agg_trade_subs))
                 .add(Streams::<Candles1m>::builder().subscribe(candle_1m_subs))
                 .add(Streams::<Candles1h>::builder().subscribe(candle_1h_subs))
+                .add(Streams::<Candles4h>::builder().subscribe(candle_4h_subs))
                 .add(Streams::<Liquidations>::builder().subscribe(liquidation_subs))
                 .add(Streams::<OrderBooksL1>::builder().subscribe(l1_subs))
-                .add(Streams::<Tickers24hr>::builder().subscribe(ticker_subs));
+                .add(Streams::<Tickers24hr>::builder().subscribe(ticker_subs))
+                .add(Streams::<MarkPrices>::builder().subscribe(mark_price_subs))
+                .add(Streams::<OpenInterests>::builder().subscribe(oi_subs));
         }
 
         let streams: Streams<MarketStreamResult<String, DataKind>> = builder.init().await?;
@@ -287,6 +334,7 @@ impl FutureQuotation {
                                 let span_ms = match interval {
                                     UhfKlineInterval::M1 => 60_000,
                                     UhfKlineInterval::H1 => 3_600_000,
+                                    UhfKlineInterval::H4 => 14_400_000,
                                 };
 
                                 let kline = QuotationKline {
@@ -782,6 +830,8 @@ fn apply_event_to_strategy_context(
                 UhfKlineInterval::H1
             } else if event.instrument.ends_with("|kline_1m") {
                 UhfKlineInterval::M1
+            } else if event.instrument.ends_with("|kline_4h") {
+                UhfKlineInterval::H4
             } else {
                 // Unknown interval, skip processing
                 tracing::warn!(
@@ -795,6 +845,7 @@ fn apply_event_to_strategy_context(
             let span_ms = match interval {
                 UhfKlineInterval::M1 => 60_000,
                 UhfKlineInterval::H1 => 3_600_000,
+                UhfKlineInterval::H4 => 14_400_000,
             };
 
             let kline = QuotationKline {
@@ -835,6 +886,12 @@ fn apply_event_to_strategy_context(
             match interval {
                 UhfKlineInterval::M1 => engine.dispatch(MarketEvent::Candle1m(kline.clone())),
                 UhfKlineInterval::H1 => engine.dispatch(MarketEvent::Candle1h(kline.clone())),
+                UhfKlineInterval::H4 => {
+                    // Store in trade window; pump scanner reads from there directly.
+                    if let Some(tw) = engine.ctx.trades.get_mut(&symbol) {
+                        tw.update_4h_kline(kline);
+                    }
+                }
             }
         }
         DataKind::OrderBookL1(l1) => {
@@ -879,6 +936,21 @@ fn apply_event_to_strategy_context(
             };
 
             engine.dispatch(MarketEvent::Ticker(ticker_item));
+        }
+        DataKind::MarkPrice(mp) => {
+            let event_ms = event.time_exchange.timestamp_millis().max(0) as u64;
+            engine.dispatch(MarketEvent::MarkPrice(MarkPriceItem {
+                symbol,
+                mark_price: mp.mark_price,
+                index_price: 0.0,
+                funding_rate: mp.funding_rate.unwrap_or(0.0),
+                event_time: event_ms,
+            }));
+        }
+        DataKind::OpenInterest(oi) => {
+            if let Some(tw) = engine.ctx.trades.get_mut(&symbol) {
+                tw.latest_oi = oi.open_interest;
+            }
         }
         _ => {}
     }

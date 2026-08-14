@@ -6,8 +6,10 @@ use crate::{
         book::{OrderBooksL1, OrderBooksL2},
         candle_1h::Candles1h,
         candle_1m::Candles1m,
+        candle_4h::Candles4h,
         liquidation::Liquidations,
         mark_price::MarkPrices,
+        open_interest::OpenInterests,
         ticker::Tickers24hr,
         trade::{PublicTrades, AggregatePublicTrades},
     },
@@ -63,6 +65,7 @@ impl BinanceChannel {
     ///
     /// See docs: <https://binance-docs.github.io/apidocs/futures/en/#mark-price-stream>
     pub const MARK_PRICE: Self = Self("@markPrice");
+    pub const OPEN_INTEREST: Self = Self("@openInterest");
 
     /// [`Binance`] 1-minute kline channel name.
     ///
@@ -73,6 +76,7 @@ impl BinanceChannel {
     ///
     /// See docs: <https://binance-docs.github.io/apidocs/futures/en/#kline-candlestick-streams>
     pub const KLINE_1H: Self = Self("@kline_1h");
+    pub const KLINE_4H: Self = Self("@kline_4h");
     
     /// [`Binance`] 24hr ticker channel name.
     ///
@@ -129,6 +133,14 @@ impl<Server, Instrument> Identifier<BinanceChannel>
 }
 
 impl<Server, Instrument> Identifier<BinanceChannel>
+    for Subscription<Binance<Server>, Instrument, Candles4h>
+{
+    fn id(&self) -> BinanceChannel {
+        BinanceChannel::KLINE_4H
+    }
+}
+
+impl<Server, Instrument> Identifier<BinanceChannel>
     for Subscription<Binance<Server>, Instrument, Tickers24hr>
 {
     fn id(&self) -> BinanceChannel {
@@ -165,6 +177,30 @@ impl<Instrument> Identifier<BinanceChannel>
 {
     fn id(&self) -> BinanceChannel {
         BinanceChannel::MARK_PRICE
+    }
+}
+
+impl<Instrument> Identifier<BinanceChannel>
+    for Subscription<Binance<BinanceServerFuturesUsdMarket>, Instrument, MarkPrices>
+{
+    fn id(&self) -> BinanceChannel {
+        BinanceChannel::MARK_PRICE
+    }
+}
+
+impl<Instrument> Identifier<BinanceChannel>
+    for Subscription<BinanceFuturesUsd, Instrument, OpenInterests>
+{
+    fn id(&self) -> BinanceChannel {
+        BinanceChannel::OPEN_INTEREST
+    }
+}
+
+impl<Instrument> Identifier<BinanceChannel>
+    for Subscription<Binance<BinanceServerFuturesUsdMarket>, Instrument, OpenInterests>
+{
+    fn id(&self) -> BinanceChannel {
+        BinanceChannel::OPEN_INTEREST
     }
 }
 

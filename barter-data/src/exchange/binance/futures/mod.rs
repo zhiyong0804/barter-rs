@@ -1,5 +1,6 @@
 use self::liquidation::BinanceLiquidation;
 use self::mark_price::BinanceMarkPrice;
+use self::open_interest::BinanceOpenInterest;
 use super::{Binance, ExchangeServer};
 use crate::{
     NoInitialSnapshots,
@@ -15,7 +16,8 @@ use crate::{
     },
     instrument::InstrumentData,
     subscription::{
-        book::OrderBooksL2, liquidation::Liquidations, mark_price::MarkPrices, ticker::Tickers24hr,
+        book::OrderBooksL2, liquidation::Liquidations, mark_price::MarkPrices,
+        open_interest::OpenInterests, ticker::Tickers24hr,
     },
     transformer::stateless::StatelessTransformer,
 };
@@ -30,6 +32,9 @@ pub mod liquidation;
 
 /// Mark price types.
 pub mod mark_price;
+
+/// Open interest types.
+pub mod open_interest;
 
 /// [`BinanceFuturesUsd`] WebSocket server base url.
 ///
@@ -126,6 +131,35 @@ where
     type SnapFetcher = NoInitialSnapshots;
     type Stream =
         BinanceWsStream<StatelessTransformer<Self, Instrument::Key, MarkPrices, BinanceMarkPrice>>;
+}
+
+impl<Instrument> StreamSelector<Instrument, MarkPrices> for BinanceFuturesUsdMarket
+where
+    Instrument: InstrumentData,
+{
+    type SnapFetcher = NoInitialSnapshots;
+    type Stream =
+        BinanceWsStream<StatelessTransformer<Self, Instrument::Key, MarkPrices, BinanceMarkPrice>>;
+}
+
+impl<Instrument> StreamSelector<Instrument, OpenInterests> for BinanceFuturesUsd
+where
+    Instrument: InstrumentData,
+{
+    type SnapFetcher = NoInitialSnapshots;
+    type Stream = BinanceWsStream<
+        StatelessTransformer<Self, Instrument::Key, OpenInterests, BinanceOpenInterest>,
+    >;
+}
+
+impl<Instrument> StreamSelector<Instrument, OpenInterests> for BinanceFuturesUsdMarket
+where
+    Instrument: InstrumentData,
+{
+    type SnapFetcher = NoInitialSnapshots;
+    type Stream = BinanceWsStream<
+        StatelessTransformer<Self, Instrument::Key, OpenInterests, BinanceOpenInterest>,
+    >;
 }
 
 impl<Instrument> StreamSelector<Instrument, Tickers24hr> for BinanceFuturesUsdMarket

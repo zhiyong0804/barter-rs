@@ -26,11 +26,17 @@ pub mod candle_1m;
 /// 1-hour Candle [`SubscriptionKind`] and the associated Barter output data model.
 pub mod candle_1h;
 
+/// 4-hour Candle [`SubscriptionKind`] and the associated Barter output data model.
+pub mod candle_4h;
+
 /// Liquidation [`SubscriptionKind`] and the associated Barter output data model.
 pub mod liquidation;
 
 /// Mark price [`SubscriptionKind`] and the associated Barter output data model.
 pub mod mark_price;
+
+/// Open Interest [`SubscriptionKind`] and the associated Barter output data model.
+pub mod open_interest;
 
 /// 24hr Ticker [`SubscriptionKind`] and the associated Barter output data model.
 pub mod ticker;
@@ -100,6 +106,7 @@ pub enum SubKind {
     Liquidations,
     Candles,
     MarkPrices,
+    OpenInterests,
     Tickers24hr,
 }
 
@@ -276,7 +283,8 @@ pub fn exchange_supports_instrument_kind_sub_kind(
         (
             BinanceFuturesUsd,
             Perpetual,
-            PublicTrades | OrderBooksL1 | OrderBooksL2 | Liquidations | MarkPrices | Tickers24hr,
+            PublicTrades | OrderBooksL1 | OrderBooksL2 | Liquidations | MarkPrices
+            | OpenInterests | Tickers24hr,
         ) => true,
         (Bitfinex, Spot, PublicTrades) => true,
         (Bitmex, Perpetual, PublicTrades) => true,

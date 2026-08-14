@@ -8,7 +8,8 @@ pub use config::SymbolSpec;
 pub use future_quotation::FutureQuotation;
 // pub use rate_limiter::RateLimiter; // Removed unused import
 pub use trade_window::{
-    BestBidAskItem, QuotationKline, QuotationTicker, TradeItem, UhfKlineInterval, UhfTradeWindow,
+    BestBidAskItem, MarkPriceItem, QuotationKline, QuotationTicker, TradeItem, UhfKlineInterval,
+    UhfTradeWindow,
 };
 // pub use writer::AsyncRollbackWriter; // Removed unused import
 

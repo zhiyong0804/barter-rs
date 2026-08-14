@@ -19,6 +19,7 @@ pub enum SignalType {
     HugeMomentum,
     Pullback,
     OrderNotify,
+    PumpScanner,
 }
 
 pub const ORDER_NOTIFY_STRATEGY_ID: u64 = 10_001;
@@ -39,6 +40,8 @@ pub struct SignalTypeChatIds {
     pub pullback: Option<String>,
     #[serde(default)]
     pub order_notify: Option<String>,
+    #[serde(default)]
+    pub pump_scanner: Option<String>,
 }
 
 impl SignalTypeChatIds {
@@ -51,6 +54,7 @@ impl SignalTypeChatIds {
             self.huge_momentum.as_deref(),
             self.pullback.as_deref(),
             self.order_notify.as_deref(),
+            self.pump_scanner.as_deref(),
         ]
         .iter()
         .any(|value| value.is_some_and(|v| !v.trim().is_empty()))
@@ -65,6 +69,7 @@ impl SignalTypeChatIds {
             SignalType::HugeMomentum => self.huge_momentum.as_deref(),
             SignalType::Pullback => self.pullback.as_deref(),
             SignalType::OrderNotify => self.order_notify.as_deref(),
+            SignalType::PumpScanner => self.pump_scanner.as_deref(),
         }?;
 
         let trimmed = raw.trim();
