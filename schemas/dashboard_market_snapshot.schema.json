@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Dashboard Market Snapshot",
+  "type": "object",
+  "required": ["schema_version", "generated_at", "universe", "filters", "assets"],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "generated_at": {"type": "string"},
+    "universe": {"type": "object"},
+    "filters": {"type": "object"},
+    "assets": {"type": "array"},
+    "source_status": {"type": "object"},
+    "warnings": {"type": "array"}
+  }
+}
